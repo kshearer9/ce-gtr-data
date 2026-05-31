@@ -15,7 +15,8 @@ Method: a two-stage protocol following systematic-review conventions (PRISMA
 
   Stage 2 - SCREENING
     Each project is classified against a concept-block inclusion rule
-    (CORE / STRATEGY / AMBIGUOUS terms with Boolean logic).
+    (core / strategy / ambiguous terms with Boolean logic).
+    Screening checks title + abstract + technical summary + potential impact.
 
 For each kept project the script also enriches with lead organisation name,
 principal investigator, funding amount, and dates by following the GtR API
@@ -39,6 +40,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -46,9 +48,6 @@ import requests
 # ---------------------------------------------------------------------------
 # API configuration
 # ---------------------------------------------------------------------------
-# The GtR API has multiple JSON versions. The Accept header below requests
-# the v7 schema, which is the current stable version. The User-Agent
-# identifies us politely (the API guide asks researchers to do this).
 BASE_URL = "https://gtr.ukri.org/gtr/api/projects"
 HEADERS = {
     "Accept": "application/vnd.rcuk.gtr.json-v7",
@@ -58,11 +57,6 @@ HEADERS = {
 # ---------------------------------------------------------------------------
 # Stage 1 - identification: search terms sent to the GtR API
 # ---------------------------------------------------------------------------
-# Six terms grounded in Kirchherr et al. (2017) and the EMF glossary (2021):
-# the umbrella concept, three operationalisations, and one distinct R-strategy.
-# Note: GtR's search matches individual words (not phrases) across title,
-# abstract, project reference and ORCID iD - which is why Stage 2 screening
-# is needed.
 DEFAULT_TERMS = [
     "circular economy",
     "industrial symbiosis",
@@ -75,34 +69,26 @@ DEFAULT_TERMS = [
 # ---------------------------------------------------------------------------
 # Stage 2 - screening vocabulary (concept blocks)
 # ---------------------------------------------------------------------------
-# Each pattern is a regex stem. Block membership reflects the term's role in
-# the source definitions:
-#
-#   CORE     -> appears in the DEFINITION of CE itself (1 hit = inclusion)
-#   STRATEGY -> R-strategies / value-retention loops (need >=2, or
-#               >=1 alongside another block hit)
-#   AMBIGUOUS -> recognised CE term with another technical meaning;
-#                requires corroboration from CORE or STRATEGY
-#
-# Inclusion rule (applied later in classify_ce):
-#   INCLUDE if  (>=1 CORE)
-#           OR  (>=2 STRATEGY)
-#           OR  (>=1 AMBIGUOUS AND (>=1 STRATEGY OR >=1 CORE))
+# Inclusion rule (in classify_ce):
+#   INCLUDE if  (>=1 core)
+#           OR  (>=2 strategy)
+#           OR  (>=1 ambiguous AND (>=1 strategy OR >=1 core))
 
 CORE_PATTERNS = [
-    r"circular econom\w*",        # circular economy / economies
+    r"circular econom\w*",
     r"circularity",
     r"industrial symbiosis",
     r"cradle[\s-]to[\s-]cradle",
     r"reverse logistics",
-    r"regenerati(?:ve|on)",       # regenerative production / regeneration
+    r"regenerati(?:ve|on)",
     r"technical cycle",
     r"biological cycle",
-    r"remanufactur\w*",           # remanufacture / remanufacturing
+    r"remanufactur\w*",
     r"upcycl\w*",
     r"downcycl\w*",
     r"design out waste",
     r"circular bioeconom\w*",
+    r"bioeconom\w*",
 ]
 
 STRATEGY_PATTERNS = [
@@ -121,15 +107,12 @@ STRATEGY_PATTERNS = [
 ]
 
 AMBIGUOUS_PATTERNS = [
-    r"closed[\s-]loop",   # also used in control engineering
+    r"closed[\s-]loop",
 ]
 
 # ---------------------------------------------------------------------------
 # Funder -> broad discipline mapping
 # ---------------------------------------------------------------------------
-# Most GtR projects (especially Innovate UK ones) don't have research subject
-# tags. For those, we fall back to the funder's broad disciplinary remit so
-# the dataset still has a discipline signal for every project.
 FUNDER_TO_DISCIPLINE = {
     "EPSRC": "Engineering & Physical Sciences",
     "BBSRC": "Biological Sciences",
@@ -149,8 +132,6 @@ FUNDER_TO_DISCIPLINE = {
     "Other NPIF": "National Productivity Investment Fund",
 }
 
-# Caches: many projects share the same lead organisation or PI; caching
-# the API responses means we only fetch each unique one once.
 _ORG_CACHE = {}
 _PERSON_CACHE = {}
 _FUND_CACHE = {}
@@ -166,8 +147,7 @@ def slugify(text):
 
 
 def ms_to_month_year(ms):
-    """Convert a GtR millisecond timestamp to 'Mon YYYY' (e.g. 'Aug 2021').
-    Uses UTC so dates match the GtR website (which is also UTC-based)."""
+    """Convert a GtR millisecond timestamp to 'Mon YYYY' (UTC)."""
     if not ms:
         return ""
     try:
@@ -177,9 +157,7 @@ def ms_to_month_year(ms):
 
 
 def format_with_pct(items):
-    """Turn [{text, percentage}, ...] -> 'Energy (50%); ICT (50%)' style string.
-    Used for research subjects and topics, which carry % allocations from
-    the funder's taxonomy."""
+    """Turn [{text, percentage}, ...] -> 'Energy (50%); ICT (50%)' style string."""
     parts = []
     for item in items:
         text = item.get("text", "").strip()
@@ -191,12 +169,29 @@ def format_with_pct(items):
     return "; ".join(parts)
 
 
+def clean_text(value):
+    """Normalise a GtR text field to a single-line string."""
+    return (value or "").replace("\n", " ").replace("\r", " ").strip()
+
+
+def get_grant_ref(identifiers):
+    """Extract the primary grant reference (e.g. 'EP/V042432/1') from a
+    project's identifiers list. Prefers the RCUK type, falls back to the first
+    available. This is the human-readable ID the GtR website uses in URLs."""
+    if not identifiers:
+        return ""
+    for ident in identifiers:
+        if ident.get("type") == "RCUK":
+            return ident.get("value", "")
+    return identifiers[0].get("value", "")
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 screening
 # ---------------------------------------------------------------------------
 
 def find_matches(text, patterns):
-    """Return the subset of `patterns` that match somewhere in `text`."""
+    """Return the subset of patterns that match somewhere in text."""
     found = []
     for pat in patterns:
         if re.search(r"\b" + pat, text, re.IGNORECASE):
@@ -204,14 +199,16 @@ def find_matches(text, patterns):
     return found
 
 
-def classify_ce(title, abstract):
-    """Apply the concept-block inclusion rule.
+def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
+    """Apply the concept-block inclusion rule across all available text fields.
 
     Returns:
         include (bool): True if the project passes Stage 2 screening
         matches (dict): which patterns matched in each block (for audit)
     """
-    text = f"{title or ''} {abstract or ''}"
+    text = " ".join([
+        title or "", abstract or "", tech_abstract or "", potential_impact or "",
+    ])
     core = find_matches(text, CORE_PATTERNS)
     strategy = find_matches(text, STRATEGY_PATTERNS)
     ambiguous = find_matches(text, AMBIGUOUS_PATTERNS)
@@ -229,17 +226,14 @@ def classify_ce(title, abstract):
 # ---------------------------------------------------------------------------
 
 def fetch_page(term, page, size, session, delay):
-    """Fetch one page of search results for a given term from the GtR API."""
     params = {"q": term, "p": page, "s": size}
     resp = session.get(BASE_URL, headers=HEADERS, params=params, timeout=60)
     resp.raise_for_status()
-    time.sleep(delay)  # politeness pause between requests
+    time.sleep(delay)
     return resp.json()
 
 
 def fetch_json(href, session, delay):
-    """Generic helper: fetch any GtR API URL and return parsed JSON.
-    Returns {} on failure so the rest of the script keeps running."""
     if not href:
         return {}
     try:
@@ -252,24 +246,18 @@ def fetch_json(href, session, delay):
 
 
 def fetch_fund_value(fund_href, session, delay):
-    """Follow a project's FUND link to get the £ funding amount.
-    The search-results endpoint doesn't include the £ value, so we have to
-    hit the fund endpoint separately for each project."""
     if not fund_href:
         return ""
     if fund_href in _FUND_CACHE:
         return _FUND_CACHE[fund_href]
     data = fetch_json(fund_href, session, delay)
     vp = data.get("valuePounds")
-    # GtR sometimes returns valuePounds as a dict {amount, currencyCode}
-    # and sometimes as a plain number - handle both.
     value = vp.get("amount", "") if isinstance(vp, dict) else (vp if vp is not None else "")
     _FUND_CACHE[fund_href] = value
     return value
 
 
 def fetch_org_name(org_href, session, delay):
-    """Follow a project's LEAD_ORG link to get the organisation name."""
     if not org_href:
         return ""
     if org_href in _ORG_CACHE:
@@ -281,7 +269,6 @@ def fetch_org_name(org_href, session, delay):
 
 
 def fetch_person_name(person_href, session, delay):
-    """Follow a project's PI_PER link to get the principal investigator name."""
     if not person_href:
         return ""
     if person_href in _PERSON_CACHE:
@@ -300,7 +287,6 @@ def fetch_person_name(person_href, session, delay):
 # ---------------------------------------------------------------------------
 
 def collect_term(term, size, max_pages, session, delay):
-    """Page through all results for one search term and return raw project records."""
     print(f"\n  Search term: '{term}'")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -318,7 +304,6 @@ def collect_term(term, size, max_pages, session, delay):
             projects.extend(data.get("project", []))
             print(f"    page {page}/{total_pages} collected", end="\r")
         except requests.HTTPError as exc:
-            # GtR returns 404 if you page past the end - treat as a clean stop.
             if exc.response is not None and exc.response.status_code == 404:
                 break
             raise
@@ -327,27 +312,18 @@ def collect_term(term, size, max_pages, session, delay):
 
 
 def get_links_by_rel(project, rel):
-    """GtR project records contain a `links` array of related URLs.
-    Each link has a `rel` type (e.g. 'PI_PER' = principal investigator,
-    'LEAD_ORG' = lead organisation). This filters by rel type."""
     links = project.get("links", {}).get("link", [])
     return [lk for lk in links if lk.get("rel") == rel]
 
 
 # ---------------------------------------------------------------------------
-# Project flattening (extract the fields we care about into one row)
+# Project flattening
 # ---------------------------------------------------------------------------
 
 def flatten_project(project, search_term, session, delay, enrich):
-    """Turn one raw GtR project record into a flat row for the CSV.
-
-    Also runs the Stage 2 classifier and records which terms matched
-    (useful for auditing the filter).
-    """
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
 
-    # Pull out the relationship links we need
     fund_links = get_links_by_rel(project, "FUND")
     pi_links = get_links_by_rel(project, "PI_PER")
     lead_org_links = get_links_by_rel(project, "LEAD_ORG")
@@ -357,14 +333,10 @@ def flatten_project(project, search_term, session, delay, enrich):
     pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
 
-    # Optional enrichment via additional API calls (one per project)
     value_pounds = fetch_fund_value(fund_href, session, delay) if enrich else ""
     lead_org_name = fetch_org_name(lead_org_href, session, delay) if enrich else ""
     pi_name = fetch_person_name(pi_href, session, delay) if enrich else ""
 
-    # Build the discipline signal: use research subjects when present
-    # (the granular, percentage-weighted measure), otherwise fall back to
-    # the funder's broad disciplinary remit.
     subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
     research_subjects_str = format_with_pct(subjects)
     lead_funder = project.get("leadFunder", "")
@@ -375,12 +347,22 @@ def flatten_project(project, search_term, session, delay, enrich):
         discipline_primary = FUNDER_TO_DISCIPLINE.get(lead_funder, lead_funder)
         discipline_source = "funder_mapping"
 
-    abstract = (project.get("abstractText") or "").replace("\n", " ").strip()
     title = project.get("title", "")
+    abstract = clean_text(project.get("abstractText"))
+    tech_abstract = clean_text(project.get("techAbstractText"))
+    potential_impact = clean_text(project.get("potentialImpact"))
 
-    # Stage 2 - classify against the concept-block rule
-    include, matches = classify_ce(title, abstract)
+    include, matches = classify_ce(title, abstract, tech_abstract, potential_impact)
     project_id = project.get("id", "")
+
+    # Build the correct GtR URL from the grant reference (not the internal UUID)
+    identifiers_list = project.get("identifiers", {}).get("identifier", [])
+    grant_ref = get_grant_ref(identifiers_list)
+    gtr_url = (
+        f"https://gtr.ukri.org/projects?ref={quote(grant_ref, safe='')}"
+        if grant_ref
+        else f"https://gtr.ukri.org/projects?ref={project_id}"
+    )
 
     return {
         "project_id": project_id,
@@ -393,15 +375,17 @@ def flatten_project(project, search_term, session, delay, enrich):
         "fund_end": ms_to_month_year(fund_link.get("end")),
         "status": project.get("status", ""),
         "grant_category": project.get("grantCategory", ""),
+        "grant_reference": grant_ref,
         "discipline_primary": discipline_primary,
         "discipline_source": discipline_source,
         "research_subjects": research_subjects_str,
         "research_topics": format_with_pct(topics),
         "n_research_subjects": len(subjects_with_pct),
         "abstract_text": abstract,
-        "gtr_url": f"https://gtr.ukri.org/projects?ref={project_id}",
+        "tech_abstract_text": tech_abstract,
+        "potential_impact": potential_impact,
+        "gtr_url": gtr_url,
         "matched_search_term": search_term,
-        # Screening detail (for audit + validation):
         "filter_decision": "keep" if include else "drop",
         "core_matches": "; ".join(matches["core"]),
         "strategy_matches": "; ".join(matches["strategy"]),
@@ -414,12 +398,6 @@ def flatten_project(project, search_term, session, delay, enrich):
 # ---------------------------------------------------------------------------
 
 def main():
-    # ---- CLI arguments ----
-    # --size           page size sent to GtR (10-100)
-    # --max-pages      limit pages per term (useful for quick sample tests)
-    # --no-enrich      skip per-project fund/org/PI lookups (much faster)
-    # --no-filter      keep all projects, skip Stage 2 screening
-    # --validation-size  how many rows to draw for the hand-coding CSV
     parser = argparse.ArgumentParser(description="Collect CE projects from the UKRI GtR API.")
     parser.add_argument("--terms", type=str, default=None)
     parser.add_argument("--size", type=int, default=100)
@@ -433,7 +411,7 @@ def main():
     parser.add_argument("--validation-size", type=int, default=60)
     args = parser.parse_args()
 
-    size = max(10, min(args.size, 100))  # GtR allows 10-100 per page
+    size = max(10, min(args.size, 100))
     terms = (
         [t.strip() for t in args.terms.split(",") if t.strip()]
         if args.terms else DEFAULT_TERMS
@@ -441,7 +419,6 @@ def main():
     enrich = not args.no_enrich
     apply_filter = not args.no_filter
 
-    # Set up output directories
     out_dir = Path(args.out_dir)
     raw_dir = out_dir / "raw"
     proc_dir = out_dir / "processed"
@@ -457,13 +434,10 @@ def main():
     print(f"Terms: {len(terms)} | Page size: {size} | Delay: {args.delay}s")
     print(f"Enrich: {enrich} | CE screening: {apply_filter}")
 
-    # We track BOTH kept and dropped projects so the validation sample can
-    # draw from the full set (we want to measure false positives AND negatives).
     all_rows = []
     kept_rows = []
     filter_stats = {}
 
-    # ---- main loop: one term at a time ----
     for term in terms:
         try:
             raw_projects = collect_term(term, size, args.max_pages, session, args.delay)
@@ -471,7 +445,6 @@ def main():
             print(f"    ERROR for term '{term}': {exc}", file=sys.stderr)
             continue
 
-        # Save the raw JSON for reproducibility - never lose data.
         raw_path = raw_dir / f"gtr_raw_{slugify(term)}_{timestamp}.json"
         with open(raw_path, "w", encoding="utf-8") as fh:
             json.dump(raw_projects, fh, indent=2, ensure_ascii=False)
@@ -479,7 +452,6 @@ def main():
         if enrich and raw_projects:
             print(f"    enriching {len(raw_projects)} projects (fund/org/PI)...")
 
-        # Process each project: flatten + classify
         kept_n = 0
         for p in raw_projects:
             row, include = flatten_project(p, term, session, args.delay, enrich)
@@ -496,7 +468,6 @@ def main():
         print("\nNo projects kept. Try --no-filter or check search terms.")
         sys.exit(1)
 
-    # ---- Output 1: kept projects (deduplicated by project_id) ----
     df = pd.DataFrame(kept_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
     out_path = proc_dir / f"gtr_ce_projects_{timestamp}.csv"
     latest_path = proc_dir / "gtr_ce_projects_latest.csv"
@@ -504,29 +475,26 @@ def main():
     df.to_csv(latest_path, index=False, encoding="utf-8")
     print(f"\nDeduplicated kept: {len(df)} unique projects")
 
-    # ---- Output 2: full set with filter decisions (for audit) ----
     all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
     all_path = proc_dir / f"gtr_ce_all_with_decision_{timestamp}.csv"
     all_df.to_csv(all_path, index=False, encoding="utf-8")
 
-    # ---- Output 3: validation sample for hand-coding ----
-    # Random seed makes the sample reproducible (we get the same 60 each run).
-    # Drawn from ALL projects (kept + dropped) so we can measure both false
-    # positives (filter wrongly kept) and false negatives (filter wrongly dropped).
     random.seed(42)
     n = min(args.validation_size, len(all_df))
     sample = all_df.sample(n=n, random_state=42).copy()
     sample["abstract_preview"] = sample["abstract_text"].str.slice(0, 300)
-    sample["is_ce_manual"] = ""   # to be filled by hand: 1 = CE, 0 = not CE
+    sample["tech_abstract_preview"] = sample["tech_abstract_text"].str.slice(0, 300)
+    sample["potential_impact_preview"] = sample["potential_impact"].str.slice(0, 300)
+    sample["is_ce_manual"] = ""
     val_cols = [
         "project_id", "title", "matched_search_term", "filter_decision",
         "core_matches", "strategy_matches", "ambiguous_matches",
-        "abstract_preview", "gtr_url", "is_ce_manual",
+        "abstract_preview", "tech_abstract_preview", "potential_impact_preview",
+        "gtr_url", "is_ce_manual",
     ]
     val_path = proc_dir / f"gtr_validation_sample_{timestamp}.csv"
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
 
-    # ---- Final summary ----
     print("\nScreening summary by term:")
     for term, (raw, kept) in filter_stats.items():
         print(f"  {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
@@ -534,7 +502,7 @@ def main():
     print(f"\nOutputs in {proc_dir}/:")
     print(f"  {out_path.name}            (kept projects)")
     print(f"  {all_path.name}  (all projects + screening decision)")
-    print(f"  {val_path.name}    (HAND-CODE THIS: fill is_ce_manual with 1/0)")
+    print(f"  {val_path.name}    (hand-code: fill is_ce_manual with keep/drop)")
     print("\nDone.")
 
 
