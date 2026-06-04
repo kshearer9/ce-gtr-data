@@ -327,15 +327,25 @@ def flatten_project(project, search_term, session, delay, enrich):
     fund_links = get_links_by_rel(project, "FUND")
     pi_links = get_links_by_rel(project, "PI_PER")
     lead_org_links = get_links_by_rel(project, "LEAD_ORG")
+    participant_orgs_links = get_links_by_rel(project, "PARTICIPANT_ORG")
 
     fund_link = fund_links[0] if fund_links else {}
     fund_href = fund_link.get("href", "")
     pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
+    participant_orgs_hrefs = [link.get("href", "") for link in participant_orgs_links]
 
     value_pounds = fetch_fund_value(fund_href, session, delay) if enrich else ""
     lead_org_name = fetch_org_name(lead_org_href, session, delay) if enrich else ""
     pi_name = fetch_person_name(pi_href, session, delay) if enrich else ""
+    participant_orgs_names_full = [fetch_org_name(href, session, delay) for href in participant_orgs_hrefs if href] if enrich else []
+    if enrich and participant_orgs_names_full:
+        participant_orgs_set = {org.strip() for org in participant_orgs_names_full if org}
+        lead_org_name_clean = (lead_org_name or "").strip()
+        participant_orgs_set.discard(lead_org_name_clean)
+        participant_orgs_names = "; ".join(sorted(participant_orgs_set))
+    else: 
+        participant_orgs_names = ""
 
     subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
     research_subjects_str = format_with_pct(subjects)
@@ -368,6 +378,7 @@ def flatten_project(project, search_term, session, delay, enrich):
         "project_id": project_id,
         "title": title,
         "lead_organisation": lead_org_name,
+        "participant_organisations": participant_orgs_names,
         "principal_investigator": pi_name,
         "lead_funder": lead_funder,
         "value_pounds": value_pounds,
