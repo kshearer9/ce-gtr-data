@@ -41,7 +41,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-
 import pandas as pd
 import requests
 
@@ -285,8 +284,7 @@ def fetch_person_name(person_href, session, delay):
 # ---------------------------------------------------------------------------
 # Per-term collection
 # ---------------------------------------------------------------------------
-
-def collect_term(term, size, max_pages, session, delay):
+def collect_term(term, size, max_pages, delay, session):
     print(f"\n  Search term: '{term}'")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -319,51 +317,26 @@ def get_links_by_rel(project, rel):
 # ---------------------------------------------------------------------------
 # Project flattening
 # ---------------------------------------------------------------------------
-
-def flatten_project(project, search_term, session, delay, enrich):
+def flatten_project(project, search_term):
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
-
+    
     fund_links = get_links_by_rel(project, "FUND")
     pi_links = get_links_by_rel(project, "PI_PER")
     lead_org_links = get_links_by_rel(project, "LEAD_ORG")
     participant_orgs_links = get_links_by_rel(project, "PARTICIPANT_ORG")
 
     fund_link = fund_links[0] if fund_links else {}
-    fund_href = fund_link.get("href", "")
     pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
     participant_orgs_hrefs = [link.get("href", "") for link in participant_orgs_links]
-
-    value_pounds = fetch_fund_value(fund_href, session, delay) if enrich and fund_href else ""
-    pi_name = fetch_person_name(pi_href, session, delay) if enrich and pi_href else ""
-    lead_org_name = fetch_org_name(lead_org_href, session, delay) if enrich and lead_org_href else ""
-    participant_orgs_names = ""
-    if enrich and any(participant_orgs_hrefs):
-        participant_orgs_names_full = [fetch_org_name(href, session, delay) for href in participant_orgs_hrefs if href]
-        lead_norm = (lead_org_name or "").strip().lower()
-        participant_orgs_set = {org.strip() for org in participant_orgs_names_full if org and org.strip().lower() != lead_norm}
-        participant_orgs_names = "; ".join(sorted(participant_orgs_set))
-
-    subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
-    research_subjects_str = format_with_pct(subjects)
-    lead_funder = project.get("leadFunder", "")
-    if subjects_with_pct:
-        discipline_primary = research_subjects_str
-        discipline_source = "research_subjects"
-    else:
-        discipline_primary = FUNDER_TO_DISCIPLINE.get(lead_funder, lead_funder)
-        discipline_source = "funder_mapping"
 
     title = project.get("title", "")
     abstract = clean_text(project.get("abstractText"))
     tech_abstract = clean_text(project.get("techAbstractText"))
     potential_impact = clean_text(project.get("potentialImpact"))
-
     include, matches = classify_ce(title, abstract, tech_abstract, potential_impact)
     project_id = project.get("id", "")
-
-    # Build the correct GtR URL from the grant reference (not the internal UUID)
     identifiers_list = project.get("identifiers", {}).get("identifier", [])
     grant_ref = get_grant_ref(identifiers_list)
     gtr_url = (
@@ -372,19 +345,29 @@ def flatten_project(project, search_term, session, delay, enrich):
         else f"https://gtr.ukri.org/projects?ref={project_id}"
     )
 
+    lead_funder = project.get("leadFunder", "")
+    subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
+    research_subjects_str = format_with_pct(subjects)
+    if subjects_with_pct:
+        discipline_primary = research_subjects_str
+        discipline_source = "research_subjects"
+    else:
+        discipline_primary = FUNDER_TO_DISCIPLINE.get(lead_funder, lead_funder)
+        discipline_source = "funder_mapping"
+
     return {
         "project_id": project_id,
         "title": title,
-        "lead_organisation": lead_org_name,
-        "participant_organisations": participant_orgs_names,
-        "principal_investigator": pi_name,
         "lead_funder": lead_funder,
-        "value_pounds": value_pounds,
         "fund_start": ms_to_month_year(fund_link.get("start")),
         "fund_end": ms_to_month_year(fund_link.get("end")),
+        "value_pounds": "",
         "status": project.get("status", ""),
         "grant_category": project.get("grantCategory", ""),
         "grant_reference": grant_ref,
+        "principal_investigator": "",
+        "lead_organisation": "",
+        "participant_organisations": "",
         "discipline_primary": discipline_primary,
         "discipline_source": discipline_source,
         "research_subjects": research_subjects_str,
@@ -399,7 +382,42 @@ def flatten_project(project, search_term, session, delay, enrich):
         "core_matches": "; ".join(matches["core"]),
         "strategy_matches": "; ".join(matches["strategy"]),
         "ambiguous_matches": "; ".join(matches["ambiguous"]),
+        # Store hrefs for enrichment
+        "_fund_href": fund_link.get("href", ""),
+        "_pi_href": pi_href,
+        "_lead_org_href": lead_org_href,
+        "_participant_orgs_hrefs": participant_orgs_hrefs,
     }, include
+
+
+# ---------------------------------------------------------------------------
+# Enrichment 
+# ---------------------------------------------------------------------------
+def enrich_row(row, delay, session):
+    """
+    Add fund value, PI name, and organisation names.
+    Enrichment is done after deduplication and filtering so we only
+    make API calls for genuinely CE-relevant projects.
+    """
+    value_pounds = fetch_fund_value(row.get("_fund_href", ""), session, delay)
+    lead_org_name = fetch_org_name(row.get("_lead_org_href", ""), session, delay)
+    pi_name = fetch_person_name(row.get("_pi_href", ""), session, delay)
+    participant_orgs_names = ""
+    participant_hrefs = row.get("_participant_orgs_hrefs", [])
+    if participant_hrefs:
+        names = [fetch_org_name(href, session, delay) for href in participant_hrefs if href]
+        participant_orgs_set = {org.strip() for org in names if org}
+        lead_org_name_clean = (lead_org_name or "").strip()
+        participant_orgs_set.discard(lead_org_name_clean)
+        participant_orgs_names = "; ".join(sorted(participant_orgs_set))
+    row["value_pounds"] = value_pounds
+    row["lead_organisation"] = lead_org_name
+    row["principal_investigator"] = pi_name
+    row["participant_organisations"] = participant_orgs_names
+    # Remove internal link fields
+    for key in ["_fund_href", "_pi_href", "_lead_org_href", "_participant_orgs_hrefs"]:
+        row.pop(key, None)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -444,12 +462,10 @@ def main():
     print(f"Enrich: {enrich} | CE screening: {apply_filter}")
 
     all_rows = []
-    kept_rows = []
     filter_stats = {}
-
     for term in terms:
         try:
-            raw_projects = collect_term(term, size, args.max_pages, session, args.delay)
+            raw_projects = collect_term(term, size, args.max_pages, args.delay, session)
         except requests.RequestException as exc:
             print(f"    ERROR for term '{term}': {exc}", file=sys.stderr)
             continue
@@ -458,33 +474,49 @@ def main():
         with open(raw_path, "w", encoding="utf-8") as fh:
             json.dump(raw_projects, fh, indent=2, ensure_ascii=False)
 
-        if enrich and raw_projects:
-            print(f"    enriching {len(raw_projects)} projects (fund/org/PI)...")
-
         kept_n = 0
         for p in raw_projects:
-            row, include = flatten_project(p, term, session, args.delay, enrich)
+            row, include = flatten_project(p, term)
             all_rows.append(row)
-            if (not apply_filter) or include:
-                kept_rows.append(row)
+            if include:
                 kept_n += 1
         filter_stats[term] = (len(raw_projects), kept_n)
         if apply_filter:
-            print(f"    screening: {len(raw_projects)} -> {kept_n} kept "
-                  f"({len(raw_projects) - kept_n} dropped)")
+            print(f"    screening: {len(raw_projects)} -> {kept_n} kept ({len(raw_projects) - kept_n} dropped)")
 
-    if not kept_rows:
-        print("\nNo projects kept. Try --no-filter or check search terms.")
-        sys.exit(1)
+    all_df = pd.DataFrame(all_rows)
+    all_df = all_df.drop_duplicates(subset="project_id").reset_index(drop=True)
+    if apply_filter:
+        kept_df = all_df[all_df["filter_decision"] == "keep"].copy()
+    else:
+        kept_df = all_df.copy()
 
-    df = pd.DataFrame(kept_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
+    print(f"\nUnique projects collected: {len(all_df)}")
+    print(f"Unique kept projects: {len(kept_df)}")
+    print("\nScreening summary by term:")
+    for term, (raw, kept) in filter_stats.items():
+        print(f"  {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
+
+    # Enrichment
+    if enrich and len(kept_df) > 0:
+        print(f"\nEnriching {len(kept_df)} projects...")
+
+        enriched_rows = []
+        for idx, row in kept_df.iterrows():
+            try:
+                enriched = enrich_row(row.to_dict(), args.delay, session)
+                enriched_rows.append(enriched)
+            except Exception as exc:
+                print(f"    Enrichment error (row {idx}): {exc}")
+
+        kept_df = pd.DataFrame(enriched_rows)
+
+    # Output
     out_path = proc_dir / f"gtr_ce_projects_{timestamp}.csv"
     latest_path = proc_dir / "gtr_ce_projects_latest.csv"
-    df.to_csv(out_path, index=False, encoding="utf-8")
-    df.to_csv(latest_path, index=False, encoding="utf-8")
-    print(f"\nDeduplicated kept: {len(df)} unique projects")
+    kept_df.to_csv(out_path, index=False, encoding="utf-8")
+    kept_df.to_csv(latest_path, index=False, encoding="utf-8")
 
-    all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
     all_path = proc_dir / f"gtr_ce_all_with_decision_{timestamp}.csv"
     all_df.to_csv(all_path, index=False, encoding="utf-8")
 
@@ -503,10 +535,6 @@ def main():
     ]
     val_path = proc_dir / f"gtr_validation_sample_{timestamp}.csv"
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
-
-    print("\nScreening summary by term:")
-    for term, (raw, kept) in filter_stats.items():
-        print(f"  {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
 
     print(f"\nOutputs in {proc_dir}/:")
     print(f"  {out_path.name}            (kept projects)")
