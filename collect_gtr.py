@@ -491,24 +491,24 @@ def main():
     else:
         kept_df = all_df.copy()
 
-    print(f"\nUnique projects collected: {len(all_df)}")
-    print(f"Unique kept projects: {len(kept_df)}")
-    print("\nScreening summary by term:")
+    print(f"\n  Unique projects collected: {len(all_df)}")
+    print(f"  Unique kept projects: {len(kept_df)}")
+    print("\n  Screening summary by term:")
     for term, (raw, kept) in filter_stats.items():
-        print(f"  {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
+        print(f"    {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
+    print("")
 
     # Enrichment
     if enrich and len(kept_df) > 0:
-        print(f"\nEnriching {len(kept_df)} projects...")
-
+        total = len(kept_df)
         enriched_rows = []
-        for idx, row in kept_df.iterrows():
+        for i, (idx, row) in enumerate(kept_df.iterrows(), start=1):
             try:
                 enriched = enrich_row(row.to_dict(), args.delay, session)
                 enriched_rows.append(enriched)
+                print(f"  Enriched {i}/{total} projects.", end="\r")
             except Exception as exc:
                 print(f"    Enrichment error (row {idx}): {exc}")
-
         kept_df = pd.DataFrame(enriched_rows)
 
     # Output
