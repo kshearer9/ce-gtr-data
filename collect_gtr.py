@@ -413,6 +413,7 @@ def flatten_project(project, search_term):
         "participant_organisations": "",
         "principal_investigator": "",
         "value_pounds": "",
+        "funding_data_available": "",
         "sectors": "",
         # Fields available directly from the search response
         "lead_funder": lead_funder,
@@ -453,7 +454,14 @@ def enrich_row(row, delay, session, collect_sectors):
     Enrichment runs after deduplication and filtering so we only make API calls
     for genuinely CE-relevant, unique projects."""
     lead_org_name = fetch_org_name(row.get("_lead_org_href", ""), session, delay)
-    row["value_pounds"] = fetch_fund_value(row.get("_fund_href", ""), session, delay)
+
+    # Funding value, plus a flag marking whether GtR actually holds a value
+    # (studentships and some other categories carry no per-project funding).
+    fund_value = fetch_fund_value(row.get("_fund_href", ""), session, delay)
+    row["value_pounds"] = fund_value
+    row["funding_data_available"] = bool(
+        fund_value and str(fund_value) not in ("", "0", "0.0"))
+
     row["principal_investigator"] = fetch_person_name(row.get("_pi_href", ""), session, delay)
     row["lead_organisation"] = lead_org_name
 
