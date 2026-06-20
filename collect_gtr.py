@@ -254,25 +254,70 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
 # ---------------------------------------------------------------------------
 # API fetchers
 # ---------------------------------------------------------------------------
+# The GtR API can wobble on long runs (read timeouts, transient 502/503/504
+# server errors). These are not permanent failures, so rather than giving up we
+# retry with exponential backoff. A 404 (page genuinely absent) or 403/4xx is
+# NOT retried, since retrying would not help.
+
+# HTTP status codes that are worth retrying (server-side / transient).
+RETRYABLE_STATUS = {500, 502, 503, 504, 429}
+
+# Tunable retry behaviour (overridable from the CLI via globals set in main()).
+MAX_RETRIES = 5          # attempts per request before giving up
+BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
+
+
+def _request_with_retries(session, url, params=None):
+    """GET a URL with retry-and-backoff on timeouts and transient server errors.
+
+    Returns the parsed JSON on success. Raises the last exception if every
+    attempt fails, so the caller can decide whether to skip or abort.
+    """
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(url, headers=HEADERS, params=params, timeout=60)
+            # Retry on transient server statuses; raise on other 4xx/5xx.
+            if resp.status_code in RETRYABLE_STATUS:
+                raise requests.HTTPError(
+                    f"{resp.status_code} (retryable) for {resp.url}", response=resp)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+            # Only retry timeouts, connection drops, and retryable statuses.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            retryable = (
+                isinstance(exc, (requests.Timeout, requests.ConnectionError))
+                or status in RETRYABLE_STATUS
+            )
+            last_exc = exc
+            if not retryable or attempt == MAX_RETRIES:
+                raise
+            wait = BACKOFF_BASE * (2 ** (attempt - 1))
+            print(f"\n    (attempt {attempt}/{MAX_RETRIES} failed: {exc}; "
+                  f"retrying in {wait:.0f}s)", flush=True)
+            time.sleep(wait)
+    # Should not reach here, but re-raise defensively.
+    raise last_exc
+
 
 def fetch_page(term, page, size, session, delay):
     params = {"q": term, "p": page, "s": size}
-    resp = session.get(BASE_URL, headers=HEADERS, params=params, timeout=60)
-    resp.raise_for_status()
+    data = _request_with_retries(session, BASE_URL, params=params)
     time.sleep(delay)
-    return resp.json()
+    return data
 
 
 def fetch_json(href, session, delay):
     """Generic helper: fetch any GtR API URL and return parsed JSON.
-    Returns {} on failure so the rest of the script keeps running."""
+    Retries transient failures; returns {} only if all retries are exhausted,
+    so enrichment of a single project can fail softly without killing the run."""
     if not href:
         return {}
     try:
-        resp = session.get(href, headers=HEADERS, timeout=60)
-        resp.raise_for_status()
+        data = _request_with_retries(session, href)
         time.sleep(delay)
-        return resp.json()
+        return data
     except requests.RequestException:
         return {}
 
@@ -561,7 +606,16 @@ def main():
                         help="Save enrichment progress every N projects (default 100)")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignore any existing checkpoint and start enrichment over")
+    parser.add_argument("--max-retries", type=int, default=5,
+                        help="Retries per request on timeout/server error (default 5)")
+    parser.add_argument("--backoff-base", type=float, default=2.0,
+                        help="Base seconds for exponential backoff between retries (default 2)")
     args = parser.parse_args()
+
+    # Wire retry settings into the module-level globals the fetchers use.
+    global MAX_RETRIES, BACKOFF_BASE
+    MAX_RETRIES = max(1, args.max_retries)
+    BACKOFF_BASE = max(0.0, args.backoff_base)
 
     size = max(10, min(args.size, 100))
     terms = (
@@ -630,8 +684,21 @@ def main():
                         kept_n += 1
                 filter_stats[term] = (n_raw, kept_n)
             except requests.RequestException as exc:
-                print(f"    ERROR for term '{term}': {exc}", file=sys.stderr)
-                continue
+                # A term failing AFTER all retries means the API is genuinely
+                # unavailable. Writing partial output here is the dangerous
+                # failure mode (a "complete"-looking file missing whole terms),
+                # so we abort loudly and write nothing. Nothing is lost: rerun
+                # the same command when the API is back and it starts cleanly.
+                print("\n" + "=" * 64, file=sys.stderr)
+                print(f"ABORTING: collection failed on term '{term}' after "
+                      f"{MAX_RETRIES} retries.", file=sys.stderr)
+                print(f"Reason: {exc}", file=sys.stderr)
+                print("The GtR API appears to be unavailable or rate-limiting. "
+                      "No output\nor checkpoint has been written. Wait a few "
+                      "minutes and rerun the\nsame command - it will start "
+                      "cleanly.", file=sys.stderr)
+                print("=" * 64, file=sys.stderr)
+                sys.exit(1)
 
         if not all_rows:
             print("\nNo projects collected. Check search terms or connection.")
