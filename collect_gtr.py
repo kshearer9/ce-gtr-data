@@ -84,7 +84,7 @@ DEFAULT_TERMS = [
     "circular economy",
     "industrial symbiosis",
     "closed-loop",
-    "cradle to cradle",
+    "urban mining",
     "remanufacturing",
     "circular bioeconomy",
 ]
@@ -102,6 +102,7 @@ CORE_PATTERNS = [
     r"circularity",
     r"industrial symbiosis",
     r"cradle[\s-]to[\s-]cradle",
+    r"urban mining",
     r"reverse logistics",
     r"regenerati(?:ve|on)",
     r"technical cycle",
