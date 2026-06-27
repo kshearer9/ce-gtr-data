@@ -186,9 +186,10 @@ def extract_work_metadata(w):
                 for a in w.get("authorships", [])
                 if a.get("author") and a["author"].get("display_name")))
     institutions = "; ".join(dict.fromkeys(inst["display_name"]
-            for a in w.get("authorships", [])
-            for inst in a.get("institutions", []) if inst.get("display_name")))
-    topics = "; ".join(t["display_name"] for t in w.get("topics", []) if t.get("display_name"))
+                for a in w.get("authorships", [])
+                for inst in a.get("institutions", []) if inst.get("display_name")))
+    topics = "; ".join(dict.fromkeys(t["display_name"]
+                for t in w.get("topics", []) if t.get("display_name")))
     primary_topic = w.get("primary_topic", {}) or {}
     domain = primary_topic.get("domain", {}).get("display_name")
     field = primary_topic.get("field", {}).get("display_name")
@@ -228,11 +229,13 @@ def main():
         df = df.head(args.test_limit)
 
     # Iterate through projects and resolve OpenAlex awards + outputs
+    processed = 0
     results = []
     skipped_projects = []
     all_work_ids = set()
     award_lookup = {}
     for row in tqdm(df.itertuples(index=False), total=len(df)):
+        processed += 1
         if API_DOWN:
             print("Stopping run: OpenAlex API is unreachable")
             break
@@ -328,7 +331,7 @@ def main():
                 "project_id": row.project_id,
                 "project_title": row.title,
                 "grant_reference": grant_reference,
-                "reason": "no_outputs",
+                "reason": "no outputs",
             })
 
     out = pd.DataFrame(results)
