@@ -182,11 +182,12 @@ def extract_work_metadata(w):
     """
     Extracts and standardises metadata fields from OpenAlex works.
     """
-    authors = "; ".join(a["author"]["display_name"]
-        for a in w.get("authorships", []) if a.get("author"))
-    institutions = "; ".join(inst["display_name"]
-        for a in w.get("authorships", [])
-        for inst in a.get("institutions", []) if inst.get("display_name"))
+    authors = "; ".join(dict.fromkeys(a["author"]["display_name"]
+                for a in w.get("authorships", [])
+                if a.get("author") and a["author"].get("display_name")))
+    institutions = "; ".join(dict.fromkeys(inst["display_name"]
+            for a in w.get("authorships", [])
+            for inst in a.get("institutions", []) if inst.get("display_name")))
     topics = "; ".join(t["display_name"] for t in w.get("topics", []) if t.get("display_name"))
     primary_topic = w.get("primary_topic", {}) or {}
     domain = primary_topic.get("domain", {}).get("display_name")
