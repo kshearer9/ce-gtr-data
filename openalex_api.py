@@ -221,7 +221,7 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv("gtr_ce_projects_enriched_clean.csv", encoding="latin1")
+    df = pd.read_csv("gtr_ce_projects_clean.csv", encoding="latin1")
 
     if args.test_limit:
         df = df.head(args.test_limit)
