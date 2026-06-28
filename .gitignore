@@ -2,3 +2,4 @@
 .vscode/
 data/
 *.json
+*.db
