@@ -60,6 +60,23 @@ import pandas as pd
 import requests
 import sqlite3
 
+# ---------------------------------------------------------------------------
+# DIRECTORIES
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+GTR_DIR = SCRIPT_DIR.parent
+DATA_DIR = GTR_DIR / "data"
+
+RAW_DIR = DATA_DIR / "raw"
+PROC_DIR = DATA_DIR / "processed"
+CACHE_DIR = DATA_DIR / "cache"
+CKPT_DIR = DATA_DIR / "checkpoints"
+
+for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+
 # tqdm gives a clean progress bar (count, %, elapsed, ETA). It is optional:
 # if it is not installed, we fall back to a simple "Enriched X/total" counter.
 try:
@@ -81,7 +98,7 @@ HEADERS = {
 # CACHE
 # ---------------------------------------------------------------------------
 
-CACHE_DB = "gtr_cache.db"
+CACHE_DB = CACHE_DIR / "gtr_cache.db"
 conn = sqlite3.connect(CACHE_DB)
 cursor = conn.cursor()
 
@@ -376,7 +393,6 @@ def fetch_json(href, session, delay):
     try:
         data = _request_with_retries(session, href)
         time.sleep(delay)
-        data = resp.json()
         # Save to cache
         save_cache(href, data)
         return data
@@ -672,7 +688,7 @@ def main():
     parser.add_argument("--max-pages", type=int, default=None)
     parser.add_argument("--delay", type=float, default=0.3,
                         help="Seconds between API calls (default 0.3; raise to be gentler)")
-    parser.add_argument("--out-dir", type=str, default="data")
+    parser.add_argument("--out-dir", type=str, default=None),
     parser.add_argument("--no-enrich", action="store_true",
                         help="Skip fund/org/person lookups (faster, less data)")
     parser.add_argument("--no-filter", action="store_true",
@@ -706,19 +722,12 @@ def main():
     collect_sectors = args.sectors
     collect_publications = args.publications
 
-    out_dir = Path(args.out_dir)
-    raw_dir = out_dir / "raw"
-    proc_dir = out_dir / "processed"
-    ckpt_dir = out_dir / "checkpoints"
-    for d in (raw_dir, proc_dir, ckpt_dir):
-        d.mkdir(parents=True, exist_ok=True)
-
     # Checkpoint files are keyed to the run configuration (terms + size +
     # sectors) so resuming only ever continues a matching run, never mixes
     # an enrich-with-sectors run with an enrich-without one.
     run_key = f"{'-'.join(slugify(t) for t in terms)}_s{size}_sec{int(collect_sectors)}"
-    screened_ckpt = ckpt_dir / f"screened_{run_key}.csv"
-    enriched_ckpt = ckpt_dir / f"enriched_{run_key}.jsonl"
+    screened_ckpt = CKPT_DIR / f"screened_{run_key}.csv"
+    enriched_ckpt = CKPT_DIR / f"enriched_{run_key}.jsonl"
 
     if args.fresh:
         for f in (screened_ckpt, enriched_ckpt):
@@ -752,7 +761,7 @@ def main():
         all_rows = []
         filter_stats = {}
         for term in terms:
-            raw_path = raw_dir / f"gtr_raw_{slugify(term)}_{timestamp}.jsonl"
+            raw_path = RAW_DIR / f"gtr_raw_{slugify(term)}_{timestamp}.jsonl"
             try:
                 kept_n = 0
                 n_raw = 0
@@ -884,13 +893,13 @@ def main():
     all_df_out = drop_internal(all_df)
 
     # ---- Output 1: kept projects ----
-    out_path = proc_dir / f"gtr_ce_projects_{timestamp}.csv"
-    latest_path = proc_dir / "gtr_ce_projects_latest.csv"
+    out_path = PROC_DIR / f"gtr_ce_projects_{timestamp}.csv"
+    latest_path = PROC_DIR / "gtr_ce_projects_latest.csv"
     kept_df.to_csv(out_path, index=False, encoding="utf-8")
     kept_df.to_csv(latest_path, index=False, encoding="utf-8")
 
     # ---- Output 2: full set with filter decisions (audit) ----
-    all_path = proc_dir / f"gtr_ce_all_with_decision_{timestamp}.csv"
+    all_path = PROC_DIR / f"gtr_ce_all_with_decision_{timestamp}.csv"
     all_df_out.to_csv(all_path, index=False, encoding="utf-8")
 
     # ---- Output 3: validation sample for hand-coding ----
@@ -909,24 +918,24 @@ def main():
         "abstract_preview", "tech_abstract_preview", "potential_impact_preview",
         "gtr_url", "is_ce_manual",
     ]
-    val_path = proc_dir / f"gtr_validation_sample_{timestamp}.csv"
+    val_path = PROC_DIR / f"gtr_validation_sample_{timestamp}.csv"
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
 
     # ---- Output 4: project outputs ----
     publication_df = pd.DataFrame(publication_rows)
     if collect_publications:
-        pub_path = proc_dir / f"gtr_outputs_{timestamp}.csv"
+        pub_path = PROC_DIR / f"gtr_outputs_{timestamp}.csv"
         publication_df.to_csv(pub_path, index=False, encoding="utf-8")
-        publication_df.to_csv(proc_dir / "gtr_outputs_latest.csv",
+        publication_df.to_csv(PROC_DIR / "gtr_outputs_latest.csv",
                             index=False, encoding="utf-8")
 
-    print(f"\nOutputs in {proc_dir}/:")
+    print(f"\nOutputs in {PROC_DIR}/:")
     print(f"  {out_path.name}            (kept projects)")
     print(f"  {all_path.name}   (all projects + screening decision)")
     print(f"  {val_path.name}      (hand-code: fill is_ce_manual with keep/drop)")
     if collect_publications:
         print(f"  {pub_path.name}      (all publications)")
-    print(f"\nCheckpoints in {ckpt_dir}/ (safe to delete now this run finished cleanly).")
+    print(f"\nCheckpoints in {CKPT_DIR}/ (safe to delete now this run finished cleanly).")
     print("\nDone.")
 
     flush_cache()
