@@ -45,9 +45,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-
 import pandas as pd
 import requests
+import sqlite3
 
 # ---------------------------------------------------------------------------
 # API configuration
@@ -57,6 +57,56 @@ HEADERS = {
     "Accept": "application/vnd.rcuk.gtr.json-v7",
     "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
 }
+
+# ---------------------------------------------------------------------------
+# CACHE
+# ---------------------------------------------------------------------------
+
+CACHE_DB = "gtr_cache.db"
+conn = sqlite3.connect(CACHE_DB)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS api_cache (
+    url TEXT PRIMARY KEY,
+    response TEXT NOT NULL
+)
+""")
+conn.commit()
+
+CACHE_BUFFER = []
+CACHE_BUFFER_SIZE = 200
+
+# ---------------------------------------------------------------------------
+# CACHE HELPERS
+# ---------------------------------------------------------------------------
+
+def get_cache(url):
+    cursor.execute(
+        "SELECT response FROM api_cache WHERE url = ?",
+        (url,)
+    )
+    row = cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def flush_cache():
+    if not CACHE_BUFFER:
+        return
+
+    cursor.executemany("""
+        INSERT OR REPLACE INTO api_cache (url, response)
+        VALUES (?, ?)
+    """, CACHE_BUFFER)
+
+    conn.commit()
+    CACHE_BUFFER.clear()
+
+def save_cache(url, data):
+    CACHE_BUFFER.append((url, json.dumps(data)))
+
+    if len(CACHE_BUFFER) >= CACHE_BUFFER_SIZE:
+        flush_cache()
 
 # ---------------------------------------------------------------------------
 # Stage 1 - identification: search terms sent to the GtR API
@@ -143,11 +193,6 @@ NON_OUTCOME_RELS = {
     "CO_INV_PER", "PM_PER", "RESEARCH_PER", "STUDENT_PER", "PARTICIPANT_ORG",
 }
 
-_CACHE = {}
-
-publication_rows = []
-
-
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -197,6 +242,12 @@ def get_grant_ref(identifiers):
     return identifiers[0].get("value", "")
 
 
+def drop_internal(frame):
+    """Remove internal API href columns before exporting."""
+    return frame.drop(columns=[c for c in frame.columns if c.startswith("_")],
+                        errors="ignore")
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 screening
 # ---------------------------------------------------------------------------
@@ -237,6 +288,7 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
 # ---------------------------------------------------------------------------
 
 def fetch_page(term, page, size, session, delay):
+    """Fetch a single page of GtR project search results for a keyword term."""
     params = {"q": term, "p": page, "s": size}
     resp = session.get(BASE_URL, headers=HEADERS, params=params, timeout=60)
     resp.raise_for_status()
@@ -245,24 +297,30 @@ def fetch_page(term, page, size, session, delay):
 
 
 def fetch_json(href, session, delay):
-    """Generic helper: fetch any GtR API URL and return parsed JSON.
-    Returns {} on failure so the rest of the script keeps running."""
+    """Fetch and cache a GtR API resource (org, person, fund, outcome, etc.)."""
     if not href:
         return {}
-    if href in _CACHE:
-        return _CACHE[href]
+
+    # Check SQLite cache first
+    cached = get_cache(href)
+    if cached is not None:
+        return cached
+
     try:
         resp = session.get(href, headers=HEADERS, timeout=60)
         resp.raise_for_status()
         time.sleep(delay)
         data = resp.json()
-        _CACHE[href] = data
+        # Save to cache
+        save_cache(href, data)
         return data
+
     except requests.RequestException:
         return {}
 
 
 def fetch_fund_value(fund_href, session, delay):
+    """Extract funding amount (GBP) from a fund endpoint."""
     if not fund_href:
         return ""
     data = fetch_json(fund_href, session, delay)
@@ -273,14 +331,15 @@ def fetch_fund_value(fund_href, session, delay):
 
 
 def fetch_org_name(org_href, session, delay):
+    """Resolve organisation name from GtR organisation endpoint."""
     if not org_href:
         return ""
     data = fetch_json(org_href, session, delay)
     return data.get("name", "")
 
 
-
 def fetch_person_name(person_href, session, delay):
+    """Resolve PI name from GtR person endpoint."""
     if not person_href:
         return ""
     data = fetch_json(person_href, session, delay)
@@ -312,6 +371,7 @@ def fetch_sectors_from_hrefs(hrefs, session, delay):
     return "; ".join(sectors)
 
 def fetch_publications(pub_hrefs, project_info, session, delay):
+    """Retrieve publication metadata linked to a project."""
     rows = []
     for href in pub_hrefs:
         data = fetch_json(href, session, delay)
@@ -338,6 +398,7 @@ def fetch_publications(pub_hrefs, project_info, session, delay):
 # ---------------------------------------------------------------------------
 
 def collect_term(term, size, max_pages, session, delay):
+    """Run keyword search across all pages for a single CE search term."""
     print(f"\n  Search term: '{term}'")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -363,6 +424,7 @@ def collect_term(term, size, max_pages, session, delay):
 
 
 def get_links_by_rel(project, rel):
+    """Filter API link objects by relationship type (e.g. FUND, PI_PER)."""
     links = project.get("links", {}).get("link", [])
     return [lk for lk in links if lk.get("rel") == rel]
 
@@ -373,6 +435,7 @@ def get_links_by_rel(project, rel):
 # ---------------------------------------------------------------------------
 
 def flatten_project(project, search_term):
+    """Flatten nested GtR project JSON into a single structured row."""
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
     links = project.get("links", {}).get("link", [])
@@ -461,11 +524,6 @@ def flatten_project(project, search_term):
         "_publication_hrefs": publication_hrefs,
         "_outcome_hrefs": outcome_hrefs,
     }, include
-
-# ---- Strip internal href columns before writing anything ----
-def drop_internal(frame):
-    return frame.drop(columns=[c for c in frame.columns if c.startswith("_")],
-                        errors="ignore")
 
 
 # ---------------------------------------------------------------------------
@@ -601,7 +659,8 @@ def main():
         kept_df = pd.DataFrame(enriched_rows)
         print(f"\n  Enrichment complete ({total} projects).")
 
-    # ---- Collect publications (optional) ----
+    # ---- Optional: Collect publications (opt-in via --publications) ----
+    publication_rows = []
     if collect_publications:
         print("\n  Fetching publications...")
         for _, row in kept_df.iterrows():
@@ -656,6 +715,9 @@ def main():
     if collect_publications:
         print(f"  {pub_path.name}      (all publications)")
     print("\nDone.")
+
+    flush_cache()
+    conn.close()
 
 
 if __name__ == "__main__":
