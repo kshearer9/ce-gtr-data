@@ -25,8 +25,8 @@ import pandas as pd
 import argparse
 from tqdm import tqdm
 import json
-import os
 import time
+import sqlite3
 
 # ---------------------------------------------------------------------------
 # API CONFIG
@@ -48,24 +48,68 @@ SKIPPED_LOOKUP = {}
 # CACHE
 # ---------------------------------------------------------------------------
 
-# Local caching to avoid repeated API calls
-_AWARD_CACHE = "award_cache.json"
-_WORK_CACHE = "work_cache.json"
+# Cache to disk to avoid repeated API calls
+CACHE_DB = "openalex_cache.db"
+conn = sqlite3.connect(CACHE_DB)
+cursor = conn.cursor()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS award_cache (
+    project_title TEXT PRIMARY KEY,
+    response TEXT NOT NULL
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS work_cache (
+    work_id TEXT PRIMARY KEY,
+    response TEXT NOT NULL
+)
+""")
+conn.commit()
 
-def load_cache(path):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
 
-def save_cache(cache, path):
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+# ---------------------------------------------------------------------------
+# CACHE HELPERS
+# ---------------------------------------------------------------------------
 
-award_cache = load_cache(_AWARD_CACHE)
-work_cache = load_cache(_WORK_CACHE)
+def get_award(title):
+    cursor.execute(
+        "SELECT response FROM award_cache WHERE project_title = ?",
+        (title,)
+    )
+    row = cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_award(title, results):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO award_cache
+        (project_title, response)
+        VALUES (?, ?)
+        """,
+        (title, json.dumps(results))
+    )
+    conn.commit()
+
+
+def get_work(work_id):
+    cursor.execute(
+        "SELECT response FROM work_cache WHERE work_id = ?",
+        (work_id,)
+    )
+    row = cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_work(work_id, work):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO work_cache
+        (work_id, response)
+        VALUES (?, ?)
+        """,
+        (work_id, json.dumps(work))
+    )
 
 # ---------------------------------------------------------------------------
 # API FETCHERS
@@ -114,17 +158,18 @@ def safe_get(url, params=None, headers=None, timeout=15, retries=3, backoff=0.5,
         API_DOWN = True
     return None
 
-def find_award(raw_project_title):
+def find_award(search_title, raw_title):
     """
     Search the OpenAlex Awards API using a UKRI project title and
     return the top 5 matching award records.
     """
-    # Used cached result if available
-    if raw_project_title in award_cache:
-        return award_cache[raw_project_title]
+    # Use cached result if available
+    cached = get_award(raw_title)
+    if cached is not None:
+        return cached
     
     # Clean title for search (API can't search "|")
-    search_title = raw_project_title.replace(" | ", " ")
+    search_title = raw_title.replace("|", " ")
     url = "https://api.openalex.org/awards"
     params = {"search": search_title, "per-page": 50, "api_key": API_KEY}
     r = safe_get(url, params=params, headers=HEADERS, project_title=search_title)
@@ -132,16 +177,22 @@ def find_award(raw_project_title):
         return []
     data = r.json()
     results = data.get("results", [])
-
-    award_cache[raw_project_title] = results
-    save_cache(award_cache, _AWARD_CACHE)
+    save_award(raw_title, results)
     return results
 
 def fetch_works_batch(work_ids):
     """
     Batch fetch OpenAlex works. Updates work_cache and returns nothing.
     """
-    uncached = [wid for wid in work_ids if wid not in work_cache]
+    if not work_ids:
+        return
+    placeholders = ",".join("?" * len(work_ids))
+    cursor.execute(
+        f"SELECT work_id FROM work_cache WHERE work_id IN ({placeholders})",
+        work_ids,
+    )
+    cached = {row[0] for row in cursor.fetchall()}
+    uncached = [wid for wid in work_ids if wid not in cached]
     if not uncached:
         return
 
@@ -156,8 +207,8 @@ def fetch_works_batch(work_ids):
     data = r.json()
     for work in data.get("results", []):
         work_id = work["id"].split("/")[-1]
-        work_cache[work_id] = work
-    save_cache(work_cache, _WORK_CACHE)
+        save_work(work_id, work)
+    conn.commit()
 
 # ---------------------------------------------------------------------------
 # TRANSFORM / PARSING
@@ -223,7 +274,7 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv("gtr_ce_projects_clean.csv", encoding="latin1")
+    df = pd.read_csv("gtr_ce_projects_enriched.csv")
 
     if args.test_limit:
         df = df.head(args.test_limit)
@@ -253,7 +304,8 @@ def main():
         grant_reference = str(grant_reference).strip()
 
         # Match OpenAlex award to UKRI grant reference
-        awards = find_award(project_title)
+        search_title = project_title.replace(" | ", " ")
+        awards = find_award(search_title, project_title)
         award = None
         for candidate in awards:
             award_ref = str(candidate.get("funder_award_id", "")).strip()
@@ -314,8 +366,8 @@ def main():
 
         retrieved = 0
         for work_id in item["work_ids"]:
-            w = work_cache.get(work_id)
-            if not w:
+            w = get_work(work_id)
+            if w is None:
                 continue
             retrieved += 1
             metadata = extract_work_metadata(w)
@@ -343,6 +395,8 @@ def main():
         skipped_df = pd.DataFrame(skipped_projects)
         skipped_df.to_csv("openalex_missing_outputs.csv", index=False)
         print(f"Saved {len(skipped_df)} skipped project(s).")
+
+    conn.close()
 
 if __name__ == "__main__":
     main()
