@@ -27,6 +27,18 @@ from tqdm import tqdm
 import json
 import time
 import sqlite3
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# DIRECTORY CONFIG
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+OPENALEX_DIR = SCRIPT_DIR.parent    
+ROOT_DIR = OPENALEX_DIR.parent   
+
+DATA_DIR = OPENALEX_DIR / "data"
+SHARED_DIR = ROOT_DIR / "shared-data" # Temporary space until we finalise this data
 
 # ---------------------------------------------------------------------------
 # API CONFIG
@@ -49,8 +61,9 @@ SKIPPED_LOOKUP = {}
 # ---------------------------------------------------------------------------
 
 # Cache to disk to avoid repeated API calls
-CACHE_DB = "openalex_cache.db"
-conn = sqlite3.connect(CACHE_DB)
+CACHE_DB = DATA_DIR / "openalex_cache.db"
+CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
+conn = sqlite3.connect(str(CACHE_DB))
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS award_cache (
@@ -274,7 +287,7 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv("gtr_ce_projects_enriched.csv")
+    df = pd.read_csv(SHARED_DIR / "gtr_ce_projects_clean.csv", encoding = "latin1")
 
     if args.test_limit:
         df = df.head(args.test_limit)
@@ -387,13 +400,13 @@ def main():
             })
 
     out = pd.DataFrame(results)
-    out.to_csv("openalex_outputs.csv", index=False)
+    out.to_csv(DATA_DIR / "openalex_outputs.csv", index=False)
     print(f"\nSaved {len(out)} funded output(s).")
     
     # Optionally export skipped projects for evaluation
     if args.save_skipped:
         skipped_df = pd.DataFrame(skipped_projects)
-        skipped_df.to_csv("openalex_missing_outputs.csv", index=False)
+        skipped_df.to_csv(DATA_DIR / "openalex_missing_outputs.csv", index=False)
         print(f"Saved {len(skipped_df)} skipped project(s).")
 
     conn.close()
