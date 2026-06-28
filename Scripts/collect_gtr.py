@@ -23,17 +23,28 @@ project_id, then screened. Only unique, kept projects are enriched (lead org,
 participant orgs, PI, funding value, and - with --sectors - impact sectors from
 outcome records), so we never spend API calls on duplicates or dropped projects.
 
+Resuming: enrichment is the slow phase, so for long runs it is checkpointed.
+The screened set is saved once, then enriched rows are written to a checkpoint
+file every --checkpoint-every projects. If the run is interrupted, simply run
+the same command again: it reloads the screened set and the checkpoint, skips
+the projects already enriched, and carries on. Delete the checkpoint files (or
+use --fresh) to start over.
+
 Outputs (in ./data/):
-  raw/        -> raw JSON for each search term (kept for reproducibility)
+  raw/        -> raw JSON for each search term (written incrementally, kept for
+                 reproducibility)
   processed/  -> three CSVs:
-    1. gtr_ce_projects_<timestamp>.csv         (kept projects)
+    1. gtr_ce_projects_<timestamp>.csv          (kept projects)
     2. gtr_ce_all_with_decision_<timestamp>.csv (all projects + filter decision)
-    3. gtr_validation_sample_<timestamp>.csv    (60-project hand-coding sample)
+    3. gtr_validation_sample_<timestamp>.csv    (hand-coding sample)
+  checkpoints/ -> resume state (screened set + enriched-so-far); safe to delete
+                  once a run has finished cleanly.
 
 Run examples:
     python collect_gtr.py --size 25 --max-pages 1            (quick test)
     python collect_gtr.py --size 25 --max-pages 1 --sectors  (test with sectors)
     python collect_gtr.py --sectors                          (full run + sectors)
+    python collect_gtr.py --sectors --fresh                  (ignore any checkpoint)
 """
 
 import argparse
@@ -48,6 +59,14 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 import sqlite3
+
+# tqdm gives a clean progress bar (count, %, elapsed, ETA). It is optional:
+# if it is not installed, we fall back to a simple "Enriched X/total" counter.
+try:
+    from tqdm import tqdm
+    _HAS_TQDM = True
+except ImportError:
+    _HAS_TQDM = False
 
 # ---------------------------------------------------------------------------
 # API configuration
@@ -115,7 +134,7 @@ DEFAULT_TERMS = [
     "circular economy",
     "industrial symbiosis",
     "closed-loop",
-    "cradle to cradle",
+    "urban mining",
     "remanufacturing",
     "circular bioeconomy",
 ]
@@ -133,6 +152,7 @@ CORE_PATTERNS = [
     r"circularity",
     r"industrial symbiosis",
     r"cradle[\s-]to[\s-]cradle",
+    r"urban mining",
     r"reverse logistics",
     r"regenerati(?:ve|on)",
     r"technical cycle",
@@ -286,18 +306,65 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
 # ---------------------------------------------------------------------------
 # API fetchers
 # ---------------------------------------------------------------------------
+# The GtR API can wobble on long runs (read timeouts, transient 502/503/504
+# server errors). These are not permanent failures, so rather than giving up we
+# retry with exponential backoff. A 404 (page genuinely absent) or 403/4xx is
+# NOT retried, since retrying would not help.
+
+# HTTP status codes that are worth retrying (server-side / transient).
+RETRYABLE_STATUS = {500, 502, 503, 504, 429}
+
+# Tunable retry behaviour (overridable from the CLI via globals set in main()).
+MAX_RETRIES = 5          # attempts per request before giving up
+BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
+
+
+def _request_with_retries(session, url, params=None):
+    """GET a URL with retry-and-backoff on timeouts and transient server errors.
+
+    Returns the parsed JSON on success. Raises the last exception if every
+    attempt fails, so the caller can decide whether to skip or abort.
+    """
+    last_exc = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(url, headers=HEADERS, params=params, timeout=60)
+            # Retry on transient server statuses; raise on other 4xx/5xx.
+            if resp.status_code in RETRYABLE_STATUS:
+                raise requests.HTTPError(
+                    f"{resp.status_code} (retryable) for {resp.url}", response=resp)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+            # Only retry timeouts, connection drops, and retryable statuses.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            retryable = (
+                isinstance(exc, (requests.Timeout, requests.ConnectionError))
+                or status in RETRYABLE_STATUS
+            )
+            last_exc = exc
+            if not retryable or attempt == MAX_RETRIES:
+                raise
+            wait = BACKOFF_BASE * (2 ** (attempt - 1))
+            print(f"\n    (attempt {attempt}/{MAX_RETRIES} failed: {exc}; "
+                  f"retrying in {wait:.0f}s)", flush=True)
+            time.sleep(wait)
+    # Should not reach here, but re-raise defensively.
+    raise last_exc
+
 
 def fetch_page(term, page, size, session, delay):
     """Fetch a single page of GtR project search results for a keyword term."""
     params = {"q": term, "p": page, "s": size}
-    resp = session.get(BASE_URL, headers=HEADERS, params=params, timeout=60)
-    resp.raise_for_status()
+    data = _request_with_retries(session, BASE_URL, params=params)
     time.sleep(delay)
-    return resp.json()
+    return data
 
 
 def fetch_json(href, session, delay):
-    """Fetch and cache a GtR API resource (org, person, fund, outcome, etc.)."""
+    """Generic helper: fetch any GtR API URL and return parsed JSON.
+    Retries transient failures; returns {} only if all retries are exhausted,
+    so enrichment of a single project can fail softly without killing the run."""
     if not href:
         return {}
 
@@ -307,8 +374,7 @@ def fetch_json(href, session, delay):
         return cached
 
     try:
-        resp = session.get(href, headers=HEADERS, timeout=60)
-        resp.raise_for_status()
+        data = _request_with_retries(session, href)
         time.sleep(delay)
         data = resp.json()
         # Save to cache
@@ -397,8 +463,10 @@ def fetch_publications(pub_hrefs, project_info, session, delay):
 # Per-term collection
 # ---------------------------------------------------------------------------
 
-def collect_term(term, size, max_pages, session, delay):
-    """Run keyword search across all pages for a single CE search term."""
+def collect_term(term, size, max_pages, session, delay, raw_path):
+    """Collect all pages for one search term, writing the raw JSON to disk
+    incrementally (one project per line, JSONL) so nothing is held in memory
+    longer than needed and a partial run still leaves a usable raw file."""
     print(f"\n  Search term: '{term}'")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -409,18 +477,28 @@ def collect_term(term, size, max_pages, session, delay):
         total_pages = min(total_pages, max_pages)
         print(f"    (limited to {total_pages} page(s) for this run)")
 
-    projects = list(first.get("project", []))
-    for page in range(2, total_pages + 1):
-        try:
-            data = fetch_page(term, page, size, session, delay)
-            projects.extend(data.get("project", []))
+    count = 0
+    with open(raw_path, "w", encoding="utf-8") as fh:
+        projects = list(first.get("project", []))
+        for p in projects:
+            fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+            yield p
+        count += len(projects)
+
+        for page in range(2, total_pages + 1):
+            try:
+                data = fetch_page(term, page, size, session, delay)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    break
+                raise
+            page_projects = data.get("project", [])
+            for p in page_projects:
+                fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+                yield p
+            count += len(page_projects)
             print(f"    page {page}/{total_pages} collected", end="\r")
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                break
-            raise
-    print(f"    collected {len(projects)} raw project records          ")
-    return projects
+    print(f"    collected {count} raw project records          ")
 
 
 def get_links_by_rel(project, rel):
@@ -561,6 +639,29 @@ def enrich_row(row, delay, session, collect_sectors):
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers (resume support for the slow enrichment phase)
+# ---------------------------------------------------------------------------
+
+def load_checkpoint(enriched_path):
+    """Return (list of already-enriched row dicts, set of their project_ids).
+    Reads the JSONL checkpoint if it exists, else returns empties."""
+    rows, done = [], set()
+    if enriched_path.exists():
+        with open(enriched_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # skip a half-written final line
+                rows.append(rec)
+                done.add(str(rec.get("project_id", "")))
+    return rows, done
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -569,7 +670,8 @@ def main():
     parser.add_argument("--terms", type=str, default=None)
     parser.add_argument("--size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=None)
-    parser.add_argument("--delay", type=float, default=1.0)
+    parser.add_argument("--delay", type=float, default=0.3,
+                        help="Seconds between API calls (default 0.3; raise to be gentler)")
     parser.add_argument("--out-dir", type=str, default="data")
     parser.add_argument("--no-enrich", action="store_true",
                         help="Skip fund/org/person lookups (faster, less data)")
@@ -579,7 +681,20 @@ def main():
                         help="Also collect impact sectors from outcomes (slow)")
     parser.add_argument("--publications", action="store_true", help="Also collect all publications")
     parser.add_argument("--validation-size", type=int, default=60)
+    parser.add_argument("--checkpoint-every", type=int, default=100,
+                        help="Save enrichment progress every N projects (default 100)")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignore any existing checkpoint and start enrichment over")
+    parser.add_argument("--max-retries", type=int, default=5,
+                        help="Retries per request on timeout/server error (default 5)")
+    parser.add_argument("--backoff-base", type=float, default=2.0,
+                        help="Base seconds for exponential backoff between retries (default 2)")
     args = parser.parse_args()
+
+    # Wire retry settings into the module-level globals the fetchers use.
+    global MAX_RETRIES, BACKOFF_BASE
+    MAX_RETRIES = max(1, args.max_retries)
+    BACKOFF_BASE = max(0.0, args.backoff_base)
 
     size = max(10, min(args.size, 100))
     terms = (
@@ -594,8 +709,22 @@ def main():
     out_dir = Path(args.out_dir)
     raw_dir = out_dir / "raw"
     proc_dir = out_dir / "processed"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    proc_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = out_dir / "checkpoints"
+    for d in (raw_dir, proc_dir, ckpt_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Checkpoint files are keyed to the run configuration (terms + size +
+    # sectors) so resuming only ever continues a matching run, never mixes
+    # an enrich-with-sectors run with an enrich-without one.
+    run_key = f"{'-'.join(slugify(t) for t in terms)}_s{size}_sec{int(collect_sectors)}"
+    screened_ckpt = ckpt_dir / f"screened_{run_key}.csv"
+    enriched_ckpt = ckpt_dir / f"enriched_{run_key}.jsonl"
+
+    if args.fresh:
+        for f in (screened_ckpt, enriched_ckpt):
+            if f.exists():
+                f.unlink()
+        print("Starting fresh: existing checkpoint cleared.")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = requests.Session()
@@ -605,59 +734,140 @@ def main():
     print("=" * 64)
     print(f"Terms: {len(terms)} | Page size: {size} | Delay: {args.delay}s")
     print(f"Enrich: {enrich} | CE screening: {apply_filter} | Sectors: {collect_sectors}")
+    if not _HAS_TQDM:
+        print("(tqdm not installed - using a simple counter; "
+              "pip install tqdm for a progress bar)")
 
-    all_rows = []
-    filter_stats = {}
+    # -----------------------------------------------------------------------
+    # Phase 1: collect + screen. If a screened checkpoint already exists for
+    # this exact run, reload it and skip the searching entirely.
+    # -----------------------------------------------------------------------
+    if screened_ckpt.exists() and not args.fresh:
+        print(f"\nReloading screened set from checkpoint: {screened_ckpt.name}")
+        all_df = pd.read_csv(screened_ckpt)
+        # Re-derive the href columns is not possible from CSV (they were
+        # internal), so the screened checkpoint stores them too - see below.
+        print(f"  Unique projects in checkpoint: {len(all_df)}")
+    else:
+        all_rows = []
+        filter_stats = {}
+        for term in terms:
+            raw_path = raw_dir / f"gtr_raw_{slugify(term)}_{timestamp}.jsonl"
+            try:
+                kept_n = 0
+                n_raw = 0
+                for p in collect_term(term, size, args.max_pages, session, args.delay, raw_path):
+                    row, include = flatten_project(p, term)
+                    all_rows.append(row)
+                    n_raw += 1
+                    if include:
+                        kept_n += 1
+                filter_stats[term] = (n_raw, kept_n)
+            except requests.RequestException as exc:
+                # A term failing AFTER all retries means the API is genuinely
+                # unavailable. Writing partial output here is the dangerous
+                # failure mode (a "complete"-looking file missing whole terms),
+                # so we abort loudly and write nothing. Nothing is lost: rerun
+                # the same command when the API is back and it starts cleanly.
+                print("\n" + "=" * 64, file=sys.stderr)
+                print(f"ABORTING: collection failed on term '{term}' after "
+                      f"{MAX_RETRIES} retries.", file=sys.stderr)
+                print(f"Reason: {exc}", file=sys.stderr)
+                print("The GtR API appears to be unavailable or rate-limiting. "
+                      "No output\nor checkpoint has been written. Wait a few "
+                      "minutes and rerun the\nsame command - it will start "
+                      "cleanly.", file=sys.stderr)
+                print("=" * 64, file=sys.stderr)
+                sys.exit(1)
 
-    # ---- Collect + flatten everything first (no enrichment yet) ----
-    for term in terms:
-        try:
-            raw_projects = collect_term(term, size, args.max_pages, session, args.delay)
-        except requests.RequestException as exc:
-            print(f"    ERROR for term '{term}': {exc}", file=sys.stderr)
-            continue
+        if not all_rows:
+            print("\nNo projects collected. Check search terms or connection.")
+            sys.exit(1)
 
-        raw_path = raw_dir / f"gtr_raw_{slugify(term)}_{timestamp}.json"
-        with open(raw_path, "w", encoding="utf-8") as fh:
-            json.dump(raw_projects, fh, indent=2, ensure_ascii=False)
+        all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
 
-        kept_n = 0
-        for p in raw_projects:
-            row, include = flatten_project(p, term)
-            all_rows.append(row)
-            if include:
-                kept_n += 1
-        filter_stats[term] = (len(raw_projects), kept_n)
+        print(f"\n  Unique projects collected: {len(all_df)}")
+        print("\n  Screening summary by term:")
+        for term, (raw, kept) in filter_stats.items():
+            print(f"    {term:25s}  {raw:>4} raw -> {kept:>4} kept  ({raw - kept} dropped)")
 
-    if not all_rows:
-        print("\nNo projects collected. Check search terms or connection.")
-        sys.exit(1)
+        # Save the screened checkpoint INCLUDING the internal href columns,
+        # so a resumed enrichment run has everything it needs without
+        # re-searching. (Lists are JSON-encoded to survive the CSV round-trip.)
+        ckpt_df = all_df.copy()
+        ckpt_df["_participant_org_hrefs"] = ckpt_df["_participant_org_hrefs"].apply(json.dumps)
+        ckpt_df["_outcome_hrefs"] = ckpt_df["_outcome_hrefs"].apply(json.dumps)
+        ckpt_df.to_csv(screened_ckpt, index=False, encoding="utf-8")
+        print(f"\n  Screened set saved to checkpoint: {screened_ckpt.name}")
 
-    # ---- Deduplicate on project_id, then screen ----
-    all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
+    # Make sure the list-valued href columns are real lists (whether we just
+    # built them or reloaded them from the checkpoint CSV).
+    def _as_list(v):
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str) and v:
+            try:
+                out = json.loads(v)
+                return out if isinstance(out, list) else []
+            except json.JSONDecodeError:
+                return []
+        return []
+    if "_participant_org_hrefs" in all_df.columns:
+        all_df["_participant_org_hrefs"] = all_df["_participant_org_hrefs"].apply(_as_list)
+    if "_outcome_hrefs" in all_df.columns:
+        all_df["_outcome_hrefs"] = all_df["_outcome_hrefs"].apply(_as_list)
+
     if apply_filter:
         kept_df = all_df[all_df["filter_decision"] == "keep"].copy()
     else:
         kept_df = all_df.copy()
-
-    print(f"\n  Unique projects collected: {len(all_df)}")
     print(f"  Unique kept projects:      {len(kept_df)}")
-    print("\n  Screening summary by term:")
-    for term, (raw, kept) in filter_stats.items():
-        print(f"    {term:25s}  {raw:>3} raw -> {kept:>3} kept  ({raw - kept} dropped)")
 
-    # ---- Enrich only the unique keepers ----
+    # -----------------------------------------------------------------------
+    # Phase 2: enrich only the unique keepers, checkpointing as we go.
+    # -----------------------------------------------------------------------
     if enrich and len(kept_df) > 0:
+        enriched_rows, done_ids = ([], set())
+        if not args.fresh:
+            enriched_rows, done_ids = load_checkpoint(enriched_ckpt)
+            if done_ids:
+                print(f"\nResuming enrichment: {len(done_ids)} already done, "
+                      f"{len(kept_df) - len(done_ids)} to go")
+
+        todo = kept_df[~kept_df["project_id"].astype(str).isin(done_ids)]
         total = len(kept_df)
-        enriched_rows = []
-        for i, (_, row) in enumerate(kept_df.iterrows(), start=1):
-            try:
-                enriched_rows.append(enrich_row(row.to_dict(), args.delay, session, collect_sectors))
-            except Exception as exc:
-                print(f"\n    Enrichment error: {exc}")
-            print(f"  Enriched {i}/{total} projects", end="\r")
+
+        # Open the checkpoint in append mode so each enriched row is persisted
+        # as soon as it is produced (JSONL = one JSON object per line).
+        ckpt_fh = open(enriched_ckpt, "a", encoding="utf-8")
+        try:
+            iterator = todo.iterrows()
+            if _HAS_TQDM:
+                iterator = tqdm(iterator, total=len(todo), initial=0,
+                                desc="Enriching", unit="proj")
+            processed_since_flush = 0
+            for n, (_, row) in enumerate(iterator, start=1):
+                try:
+                    enriched = enrich_row(row.to_dict(), args.delay, session, collect_sectors)
+                    enriched_rows.append(enriched)
+                    ckpt_fh.write(json.dumps(enriched, ensure_ascii=False) + "\n")
+                    processed_since_flush += 1
+                except Exception as exc:
+                    print(f"\n    Enrichment error on {row.get('project_id','?')}: {exc}")
+
+                if processed_since_flush >= args.checkpoint_every:
+                    ckpt_fh.flush()
+                    processed_since_flush = 0
+
+                if not _HAS_TQDM:
+                    done_now = len(done_ids) + n
+                    print(f"  Enriched {done_now}/{total} projects", end="\r")
+        finally:
+            ckpt_fh.flush()
+            ckpt_fh.close()
+
         kept_df = pd.DataFrame(enriched_rows)
-        print(f"\n  Enrichment complete ({total} projects).")
+        print(f"\n  Enrichment complete ({len(kept_df)}/{total} projects).")
 
     # ---- Optional: Collect publications (opt-in via --publications) ----
     publication_rows = []
@@ -687,9 +897,11 @@ def main():
     random.seed(42)
     n = min(args.validation_size, len(all_df_out))
     sample = all_df_out.sample(n=n, random_state=42).copy()
-    sample["abstract_preview"] = sample["abstract_text"].str.slice(0, 300)
-    sample["tech_abstract_preview"] = sample["tech_abstract_text"].str.slice(0, 300)
-    sample["potential_impact_preview"] = sample["potential_impact"].str.slice(0, 300)
+    # Coerce to string first: a screened set reloaded from the checkpoint CSV
+    # can carry NaN (float) in empty text cells, which would break .str.slice.
+    sample["abstract_preview"] = sample["abstract_text"].fillna("").astype(str).str.slice(0, 300)
+    sample["tech_abstract_preview"] = sample["tech_abstract_text"].fillna("").astype(str).str.slice(0, 300)
+    sample["potential_impact_preview"] = sample["potential_impact"].fillna("").astype(str).str.slice(0, 300)
     sample["is_ce_manual"] = ""
     val_cols = [
         "project_id", "title", "matched_search_term", "filter_decision",
@@ -714,6 +926,7 @@ def main():
     print(f"  {val_path.name}      (hand-code: fill is_ce_manual with keep/drop)")
     if collect_publications:
         print(f"  {pub_path.name}      (all publications)")
+    print(f"\nCheckpoints in {ckpt_dir}/ (safe to delete now this run finished cleanly).")
     print("\nDone.")
 
     flush_cache()
