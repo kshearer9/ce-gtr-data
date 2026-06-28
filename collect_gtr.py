@@ -45,9 +45,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-
 import pandas as pd
 import requests
+import sqlite3
 
 # ---------------------------------------------------------------------------
 # API configuration
@@ -57,6 +57,56 @@ HEADERS = {
     "Accept": "application/vnd.rcuk.gtr.json-v7",
     "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
 }
+
+# ---------------------------------------------------------------------------
+# CACHE
+# ---------------------------------------------------------------------------
+
+CACHE_DB = "gtr_cache.db"
+conn = sqlite3.connect(CACHE_DB)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS api_cache (
+    url TEXT PRIMARY KEY,
+    response TEXT NOT NULL
+)
+""")
+conn.commit()
+
+CACHE_BUFFER = []
+CACHE_BUFFER_SIZE = 200
+
+# ---------------------------------------------------------------------------
+# CACHE HELPERS
+# ---------------------------------------------------------------------------
+
+def get_cache(url):
+    cursor.execute(
+        "SELECT response FROM api_cache WHERE url = ?",
+        (url,)
+    )
+    row = cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def flush_cache():
+    if not CACHE_BUFFER:
+        return
+
+    cursor.executemany("""
+        INSERT OR REPLACE INTO api_cache (url, response)
+        VALUES (?, ?)
+    """, CACHE_BUFFER)
+
+    conn.commit()
+    CACHE_BUFFER.clear()
+
+def save_cache(url, data):
+    CACHE_BUFFER.append((url, json.dumps(data)))
+
+    if len(CACHE_BUFFER) >= CACHE_BUFFER_SIZE:
+        flush_cache()
 
 # ---------------------------------------------------------------------------
 # Stage 1 - identification: search terms sent to the GtR API
@@ -143,11 +193,6 @@ NON_OUTCOME_RELS = {
     "CO_INV_PER", "PM_PER", "RESEARCH_PER", "STUDENT_PER", "PARTICIPANT_ORG",
 }
 
-_ORG_CACHE = {}
-_PERSON_CACHE = {}
-_FUND_CACHE = {}
-
-
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
@@ -197,6 +242,12 @@ def get_grant_ref(identifiers):
     return identifiers[0].get("value", "")
 
 
+def drop_internal(frame):
+    """Remove internal API href columns before exporting."""
+    return frame.drop(columns=[c for c in frame.columns if c.startswith("_")],
+                        errors="ignore")
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 screening
 # ---------------------------------------------------------------------------
@@ -237,6 +288,7 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
 # ---------------------------------------------------------------------------
 
 def fetch_page(term, page, size, session, delay):
+    """Fetch a single page of GtR project search results for a keyword term."""
     params = {"q": term, "p": page, "s": size}
     resp = session.get(BASE_URL, headers=HEADERS, params=params, timeout=60)
     resp.raise_for_status()
@@ -245,59 +297,60 @@ def fetch_page(term, page, size, session, delay):
 
 
 def fetch_json(href, session, delay):
-    """Generic helper: fetch any GtR API URL and return parsed JSON.
-    Returns {} on failure so the rest of the script keeps running."""
+    """Fetch and cache a GtR API resource (org, person, fund, outcome, etc.)."""
     if not href:
         return {}
+
+    # Check SQLite cache first
+    cached = get_cache(href)
+    if cached is not None:
+        return cached
+
     try:
         resp = session.get(href, headers=HEADERS, timeout=60)
         resp.raise_for_status()
         time.sleep(delay)
-        return resp.json()
+        data = resp.json()
+        # Save to cache
+        save_cache(href, data)
+        return data
+
     except requests.RequestException:
         return {}
 
 
 def fetch_fund_value(fund_href, session, delay):
+    """Extract funding amount (GBP) from a fund endpoint."""
     if not fund_href:
         return ""
-    if fund_href in _FUND_CACHE:
-        return _FUND_CACHE[fund_href]
     data = fetch_json(fund_href, session, delay)
     vp = data.get("valuePounds")
-    value = vp.get("amount", "") if isinstance(vp, dict) else (vp if vp is not None else "")
-    _FUND_CACHE[fund_href] = value
-    return value
+    if isinstance(vp, dict):
+        return vp.get("amount", "")
+    return vp if vp is not None else ""
 
 
 def fetch_org_name(org_href, session, delay):
+    """Resolve organisation name from GtR organisation endpoint."""
     if not org_href:
         return ""
-    if org_href in _ORG_CACHE:
-        return _ORG_CACHE[org_href]
     data = fetch_json(org_href, session, delay)
-    name = data.get("name", "")
-    _ORG_CACHE[org_href] = name
-    return name
+    return data.get("name", "")
 
 
 def fetch_person_name(person_href, session, delay):
+    """Resolve PI name from GtR person endpoint."""
     if not person_href:
         return ""
-    if person_href in _PERSON_CACHE:
-        return _PERSON_CACHE[person_href]
     data = fetch_json(person_href, session, delay)
     first = data.get("firstName", "") or ""
     other = data.get("otherNames", "") or ""
     surname = data.get("surname", "") or ""
-    name = " ".join(p for p in [first, other, surname] if p).strip()
-    _PERSON_CACHE[person_href] = name
-    return name
+    return " ".join(p for p in [first, other, surname] if p).strip()
 
 
 def fetch_sectors_from_hrefs(hrefs, session, delay):
     """Collect impact sectors from a project's outcome records.
-
     Sectors are tagged on outcome records (mainly key findings), not on the
     project record itself. Values are captured raw (GtR splits some names on
     internal commas and has occasional source typos); normalisation happens
@@ -317,12 +370,35 @@ def fetch_sectors_from_hrefs(hrefs, session, delay):
                     sectors.append(val)
     return "; ".join(sectors)
 
+def fetch_publications(pub_hrefs, project_info, session, delay):
+    """Retrieve publication metadata linked to a project."""
+    rows = []
+    for href in pub_hrefs:
+        data = fetch_json(href, session, delay)
+        if not data:
+            continue
+
+        rows.append({
+            "project_id": project_info["project_id"],
+            "grant_reference": project_info["grant_reference"],
+            "project_title": project_info["title"],
+            "publication_id": data.get("id", ""),
+            "publication_title": data.get("title", ""),
+            "author": data.get("author", ""),
+            "date_published": ms_to_month_year(data.get("datePublished")),
+            "publication_type": data.get("type") or "",
+            "journal": data.get("journalTitle", ""),
+            "doi": data.get("doi", "")
+        })
+    return rows
+
 
 # ---------------------------------------------------------------------------
 # Per-term collection
 # ---------------------------------------------------------------------------
 
 def collect_term(term, size, max_pages, session, delay):
+    """Run keyword search across all pages for a single CE search term."""
     print(f"\n  Search term: '{term}'")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -348,6 +424,7 @@ def collect_term(term, size, max_pages, session, delay):
 
 
 def get_links_by_rel(project, rel):
+    """Filter API link objects by relationship type (e.g. FUND, PI_PER)."""
     links = project.get("links", {}).get("link", [])
     return [lk for lk in links if lk.get("rel") == rel]
 
@@ -358,6 +435,7 @@ def get_links_by_rel(project, rel):
 # ---------------------------------------------------------------------------
 
 def flatten_project(project, search_term):
+    """Flatten nested GtR project JSON into a single structured row."""
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
     links = project.get("links", {}).get("link", [])
@@ -366,12 +444,14 @@ def flatten_project(project, search_term):
     pi_links = get_links_by_rel(project, "PI_PER")
     lead_org_links = get_links_by_rel(project, "LEAD_ORG")
     participant_org_links = get_links_by_rel(project, "PARTICIPANT_ORG")
+    publication_links = get_links_by_rel(project, "PUBLICATION")
 
     fund_link = fund_links[0] if fund_links else {}
     fund_href = fund_link.get("href", "")
     pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
     participant_org_hrefs = [lk.get("href", "") for lk in participant_org_links if lk.get("href")]
+    publication_hrefs = [lk.get("href") for lk in publication_links if lk.get("href")]
 
     # Outcome links (everything that isn't a person/org/fund link) - these are
     # what we follow to collect sectors during enrichment.
@@ -441,6 +521,7 @@ def flatten_project(project, search_term):
         "_pi_href": pi_href,
         "_lead_org_href": lead_org_href,
         "_participant_org_hrefs": participant_org_hrefs,
+        "_publication_hrefs": publication_hrefs,
         "_outcome_hrefs": outcome_hrefs,
     }, include
 
@@ -476,10 +557,6 @@ def enrich_row(row, delay, session, collect_sectors):
     if collect_sectors:
         row["sectors"] = fetch_sectors_from_hrefs(
             row.get("_outcome_hrefs", []) or [], session, delay)
-
-    for key in ["_fund_href", "_pi_href", "_lead_org_href",
-                "_participant_org_hrefs", "_outcome_hrefs"]:
-        row.pop(key, None)
     return row
 
 
@@ -500,6 +577,7 @@ def main():
                         help="Skip the CE screening (keep all matches)")
     parser.add_argument("--sectors", action="store_true",
                         help="Also collect impact sectors from outcomes (slow)")
+    parser.add_argument("--publications", action="store_true", help="Also collect all publications")
     parser.add_argument("--validation-size", type=int, default=60)
     args = parser.parse_args()
 
@@ -511,6 +589,7 @@ def main():
     enrich = not args.no_enrich
     apply_filter = not args.no_filter
     collect_sectors = args.sectors
+    collect_publications = args.publications
 
     out_dir = Path(args.out_dir)
     raw_dir = out_dir / "raw"
@@ -580,10 +659,16 @@ def main():
         kept_df = pd.DataFrame(enriched_rows)
         print(f"\n  Enrichment complete ({total} projects).")
 
-    # ---- Strip internal href columns before writing anything ----
-    def drop_internal(frame):
-        return frame.drop(columns=[c for c in frame.columns if c.startswith("_")],
-                          errors="ignore")
+    # ---- Optional: Collect publications (opt-in via --publications) ----
+    publication_rows = []
+    if collect_publications:
+        print("\n  Fetching publications...")
+        for _, row in kept_df.iterrows():
+            try:
+                publication_rows.extend(fetch_publications(
+                    row["_publication_hrefs"], row, session, args.delay))
+            except Exception as e:
+                print(f"Publication error: {e}")
 
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
@@ -615,11 +700,24 @@ def main():
     val_path = proc_dir / f"gtr_validation_sample_{timestamp}.csv"
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
 
+    # ---- Output 4: project outputs ----
+    publication_df = pd.DataFrame(publication_rows)
+    if collect_publications:
+        pub_path = proc_dir / f"gtr_outputs_{timestamp}.csv"
+        publication_df.to_csv(pub_path, index=False, encoding="utf-8")
+        publication_df.to_csv(proc_dir / "gtr_outputs_latest.csv",
+                            index=False, encoding="utf-8")
+
     print(f"\nOutputs in {proc_dir}/:")
     print(f"  {out_path.name}            (kept projects)")
-    print(f"  {all_path.name}  (all projects + screening decision)")
-    print(f"  {val_path.name}    (hand-code: fill is_ce_manual with keep/drop)")
+    print(f"  {all_path.name}   (all projects + screening decision)")
+    print(f"  {val_path.name}      (hand-code: fill is_ce_manual with keep/drop)")
+    if collect_publications:
+        print(f"  {pub_path.name}      (all publications)")
     print("\nDone.")
+
+    flush_cache()
+    conn.close()
 
 
 if __name__ == "__main__":
