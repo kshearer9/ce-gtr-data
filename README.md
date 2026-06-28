@@ -8,6 +8,3 @@
 * Outputs:
   * openalex_outputs.csv
   * Optional: openalex_missing_outputs.csv - saves all projects that have no matches for inspection
-* Cache files:
-  * award_cache.json
-  * work_cache.json
