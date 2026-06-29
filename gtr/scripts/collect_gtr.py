@@ -812,7 +812,6 @@ def main():
         ckpt_df.to_csv(screened_ckpt, index=False, encoding="utf-8")
         print(f"\n  Screened set saved to checkpoint: {screened_ckpt.name}")
 
-
     if "_participant_org_href" in all_df.columns:
         all_df["_participant_org_href"] = all_df["_participant_org_href"].apply(_as_list)
     if "_key_finding_href" in all_df.columns:
@@ -884,9 +883,9 @@ def main():
                     "title": row["title"],
                     "outcome_href": href,
                 })
-        outcome_path = RAW_DIR / f"gtr_outcome_hrefs_{timestamp}.csv"
+        outcome_path = RAW_DIR / f"gtr_outcome_hrefs.csv"
         pd.DataFrame(outcome_rows).to_csv(outcome_path, index=False)
-        print(f"Saved {len(outcome_rows)} outcome links to outcome_links.csv")
+        print(f"  Saved {len(outcome_rows)} outcome links to {outcome_path}")
 
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
