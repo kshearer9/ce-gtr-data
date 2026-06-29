@@ -29,34 +29,6 @@ RETRYABLE_STATUS = {500, 502, 503, 504, 429}
 MAX_RETRIES = 5          # attempts per request before giving up
 BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
 
-# ---------------------------------------------------------------------------
-# PARSING
-# ---------------------------------------------------------------------------
-
-def parse_outcome(data, href, project_info):
-    """Normalise a single GtR outcome into a structured row."""
-
-    return {
-        "project_id": project_info["project_id"],
-        "grant_reference": project_info["grant_reference"],
-        "project_title": project_info["title"],
-        "outcome_id": data.get("id", ""),
-        "href": href,
-        "title": data.get("title") or "",
-        "description": gtr.clean_text(data.get("description") or ""),
-        "form": data.get("form") or data.get("type") or "",
-        "primary_audience": parse_primary_audience(
-            data.get("primaryAudience") or data.get("primaryAudiences")
-        ),
-        "date": extract_date(data),
-        "impact": gtr.clean_text(
-            data.get("impact") or data.get("narrative") or data.get("summary") or ""
-        ),
-        "sector": data.get("sector") or "",
-        "impact_types": parse_impact_types(data.get("impactTypes")),
-    }
-
-
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -89,7 +61,10 @@ def parse_impact_types(it):
 
     return ""
 
-def extract_date(data):
+def extract_year(data):
+    years = data.get("yearsOfDissemination")
+    if years:
+        return years.replace(",", "; ")
     raw = (data.get("yearFirstProvided") 
            or data.get("yearsOfDissemination")
            or data.get("datePublished")
@@ -115,6 +90,53 @@ def extract_date(data):
         return datetime.fromisoformat(raw[:10]).year
     except Exception:
         return ""
+    
+def extract_type(data, href):
+    """Some outcomes do not have type associated, so take relationship type
+    where there is no form or type"""
+    # First use explicit fields form the API
+    outcome_type = data.get("form") or data.get("type")
+    if outcome_type:
+        return outcome_type
+    
+    # Otherwise infer it from the endpoint
+    href = href.lower()
+    if "collaborations" in href:
+        return "Collaboration"
+    elif "furtherfundings" in href:
+        return "Further funding"
+    elif "intellectualproperties" in href:
+        return "Intellectual properties"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# PARSING
+# ---------------------------------------------------------------------------
+
+def parse_outcome(data, href, project_info):
+    """Normalise a single GtR outcome into a structured row."""
+
+    return {
+        "project_id": project_info["project_id"],
+        "grant_reference": project_info["grant_reference"],
+        "project_title": project_info["title"],
+        "outcome_id": data.get("id", ""),
+        "href": href,
+        "title": data.get("title") or "",
+        "description": gtr.clean_text(data.get("description") or ""),
+        "type": extract_type(data, href),
+        "primary_audience": parse_primary_audience(
+            data.get("primaryAudience") or data.get("primaryAudiences")
+        ),
+        "year_of_dissemination": extract_year(data),
+        "impact": gtr.clean_text(
+            data.get("impact") or data.get("narrative") or data.get("summary") or ""
+        ),
+        "sector": data.get("sector") or "",
+        "impact_types": parse_impact_types(data.get("impactTypes")),
+    }
+
 
 
 # ---------------------------------------------------------------------------
