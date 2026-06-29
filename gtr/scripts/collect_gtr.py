@@ -228,7 +228,11 @@ FUNDER_TO_DISCIPLINE = {
 NON_OUTCOME_RELS = {
     "LEAD_ORG", "PI_PER", "FUND", "COLLAB_ORG", "PP_ORG", "FELLOW_PER",
     "CO_INV_PER", "PM_PER", "RESEARCH_PER", "STUDENT_PER", "PARTICIPANT_ORG",
+    "KEY_FINDING", "IMPACT_SUMMARY", "COI_PER", "STUDENTSHIP_FROM", 
+    "RESEARCH_COI_PER", "TGH_PER", "STUDENT_PP_ORG", "COFUND_ORG",
+    "TRANSFER", "TRANSFER_FROM"
 }
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -283,6 +287,19 @@ def drop_internal(frame):
     """Remove internal API href columns before exporting."""
     return frame.drop(columns=[c for c in frame.columns if c.startswith("_")],
                         errors="ignore")
+
+# Make sure the list-valued href columns are real lists (whether we just
+# built them or reloaded them from the checkpoint CSV).
+def _as_list(v):
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            out = json.loads(v)
+            return out if isinstance(out, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -437,42 +454,23 @@ def fetch_sectors_from_hrefs(hrefs, session, delay):
     project record itself. Values are captured raw (GtR splits some names on
     internal commas and has occasional source typos); normalisation happens
     later in processing. Returns a semicolon-joined string of unique sectors."""
+    if not hrefs:
+        return ""
     sectors = []
     seen = set()
     for href in hrefs:
         if not href:
             continue
-        outcome = fetch_json(href, session, delay)
-        sec = outcome.get("sectors")
+        data = fetch_json(href, session, delay)
+        # safely get sectors block
+        sec = data.get("sectors")
         if isinstance(sec, dict):
             for item in sec.get("item", []):
                 val = (item or "").strip()
                 if val and val not in seen:
                     seen.add(val)
                     sectors.append(val)
-    return "; ".join(sectors)
-
-def fetch_publications(pub_hrefs, project_info, session, delay):
-    """Retrieve publication metadata linked to a project."""
-    rows = []
-    for href in pub_hrefs:
-        data = fetch_json(href, session, delay)
-        if not data:
-            continue
-
-        rows.append({
-            "project_id": project_info["project_id"],
-            "grant_reference": project_info["grant_reference"],
-            "project_title": project_info["title"],
-            "publication_id": data.get("id", ""),
-            "publication_title": data.get("title", ""),
-            "author": data.get("author", ""),
-            "date_published": ms_to_month_year(data.get("datePublished")),
-            "publication_type": data.get("type") or "",
-            "journal": data.get("journalTitle", ""),
-            "doi": data.get("doi", "")
-        })
-    return rows
+    return "; ".join(sectors) if sectors else ""
 
 
 # ---------------------------------------------------------------------------
@@ -517,16 +515,11 @@ def collect_term(term, size, max_pages, session, delay, raw_path):
     print(f"    collected {count} raw project records          ")
 
 
-def get_links_by_rel(project, rel):
-    """Filter API link objects by relationship type (e.g. FUND, PI_PER)."""
-    links = project.get("links", {}).get("link", [])
-    return [lk for lk in links if lk.get("rel") == rel]
-
-
 # ---------------------------------------------------------------------------
 # Project flattening (no API calls - just reshapes the search response and
 # stashes the hrefs that enrichment will need later)
 # ---------------------------------------------------------------------------
+
 
 def flatten_project(project, search_term):
     """Flatten nested GtR project JSON into a single structured row."""
@@ -534,23 +527,32 @@ def flatten_project(project, search_term):
     topics = project.get("researchTopics", {}).get("researchTopic", [])
     links = project.get("links", {}).get("link", [])
 
-    fund_links = get_links_by_rel(project, "FUND")
-    pi_links = get_links_by_rel(project, "PI_PER")
-    lead_org_links = get_links_by_rel(project, "LEAD_ORG")
-    participant_org_links = get_links_by_rel(project, "PARTICIPANT_ORG")
-    publication_links = get_links_by_rel(project, "PUBLICATION")
+    fund_links, pi_links, lead_org_links, participant_org_links, key_finding_href, outcome_links = [], [], [], [], [], []
+
+    for lk in links:
+        href = lk.get("href", "")
+        rel = lk.get("rel", "")
+        if not href:
+            continue
+        if rel == "FUND":
+            fund_links.append(lk)
+        elif rel == "PI_PER":
+            pi_links.append(lk)
+        elif rel == "LEAD_ORG":
+            lead_org_links.append(lk)
+        elif rel == "PARTICIPANT_ORG":
+            participant_org_links.append(lk)
+        elif rel == "KEY_FINDING":
+            key_finding_href.append(href)
+        elif rel not in NON_OUTCOME_RELS:
+            outcome_links.append(lk)
 
     fund_link = fund_links[0] if fund_links else {}
     fund_href = fund_link.get("href", "")
     pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
-    participant_org_hrefs = [lk.get("href", "") for lk in participant_org_links if lk.get("href")]
-    publication_hrefs = [lk.get("href") for lk in publication_links if lk.get("href")]
-
-    # Outcome links (everything that isn't a person/org/fund link) - these are
-    # what we follow to collect sectors during enrichment.
-    outcome_hrefs = [lk.get("href", "") for lk in links
-                     if lk.get("rel") not in NON_OUTCOME_RELS and lk.get("href")]
+    participant_org_href = [lk.get("href") for lk in participant_org_links]
+    outcome_href = [lk.get("href") for lk in outcome_links]
 
     # Discipline signal (no API call - uses fields already in the response)
     subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
@@ -614,10 +616,11 @@ def flatten_project(project, search_term):
         "_fund_href": fund_href,
         "_pi_href": pi_href,
         "_lead_org_href": lead_org_href,
-        "_participant_org_hrefs": participant_org_hrefs,
-        "_publication_hrefs": publication_hrefs,
-        "_outcome_hrefs": outcome_hrefs,
+        "_participant_org_href": participant_org_href,
+        "_outcome_href": outcome_href,
+        "_key_finding_href": key_finding_href
     }, include
+
 
 
 # ---------------------------------------------------------------------------
@@ -641,8 +644,8 @@ def enrich_row(row, delay, session, collect_sectors):
     row["lead_organisation"] = lead_org_name
 
     # Participant organisations, deduplicated against the lead org
-    participant_hrefs = row.get("_participant_org_hrefs", []) or []
-    names = [fetch_org_name(href, session, delay) for href in participant_hrefs if href]
+    participant_href = row.get("_participant_org_href", []) or []
+    names = [fetch_org_name(href, session, delay) for href in participant_href if href]
     participant_set = {org.strip() for org in names if org and org.strip()}
     participant_set.discard((lead_org_name or "").strip())
     row["participant_organisations"] = "; ".join(sorted(participant_set))
@@ -650,7 +653,7 @@ def enrich_row(row, delay, session, collect_sectors):
     # Impact sectors (opt-in via --sectors; follows outcome records)
     if collect_sectors:
         row["sectors"] = fetch_sectors_from_hrefs(
-            row.get("_outcome_hrefs", []) or [], session, delay)
+            row.get("_key_finding_href", []) or [], session, delay)
     return row
 
 
@@ -695,7 +698,7 @@ def main():
                         help="Skip the CE screening (keep all matches)")
     parser.add_argument("--sectors", action="store_true",
                         help="Also collect impact sectors from outcomes (slow)")
-    parser.add_argument("--publications", action="store_true", help="Also collect all publications")
+    parser.add_argument("--outcomes", action="store_true", help="Also collect all outcomes")
     parser.add_argument("--validation-size", type=int, default=60)
     parser.add_argument("--checkpoint-every", type=int, default=100,
                         help="Save enrichment progress every N projects (default 100)")
@@ -720,7 +723,7 @@ def main():
     enrich = not args.no_enrich
     apply_filter = not args.no_filter
     collect_sectors = args.sectors
-    collect_publications = args.publications
+    collect_outcomes = args.outcomes
 
     # Checkpoint files are keyed to the run configuration (terms + size +
     # sectors) so resuming only ever continues a matching run, never mixes
@@ -804,27 +807,18 @@ def main():
         # so a resumed enrichment run has everything it needs without
         # re-searching. (Lists are JSON-encoded to survive the CSV round-trip.)
         ckpt_df = all_df.copy()
-        ckpt_df["_participant_org_hrefs"] = ckpt_df["_participant_org_hrefs"].apply(json.dumps)
-        ckpt_df["_outcome_hrefs"] = ckpt_df["_outcome_hrefs"].apply(json.dumps)
+        ckpt_df["_participant_org_href"] = ckpt_df["_participant_org_href"].apply(json.dumps)
+        ckpt_df["_key_finding_href"] = ckpt_df["_key_finding_href"].apply(json.dumps)
         ckpt_df.to_csv(screened_ckpt, index=False, encoding="utf-8")
         print(f"\n  Screened set saved to checkpoint: {screened_ckpt.name}")
 
-    # Make sure the list-valued href columns are real lists (whether we just
-    # built them or reloaded them from the checkpoint CSV).
-    def _as_list(v):
-        if isinstance(v, list):
-            return v
-        if isinstance(v, str) and v:
-            try:
-                out = json.loads(v)
-                return out if isinstance(out, list) else []
-            except json.JSONDecodeError:
-                return []
-        return []
-    if "_participant_org_hrefs" in all_df.columns:
-        all_df["_participant_org_hrefs"] = all_df["_participant_org_hrefs"].apply(_as_list)
-    if "_outcome_hrefs" in all_df.columns:
-        all_df["_outcome_hrefs"] = all_df["_outcome_hrefs"].apply(_as_list)
+
+    if "_participant_org_href" in all_df.columns:
+        all_df["_participant_org_href"] = all_df["_participant_org_href"].apply(_as_list)
+    if "_key_finding_href" in all_df.columns:
+        all_df["_key_finding_href"] = all_df["_key_finding_href"].apply(_as_list)
+    if "_outcome_href" in all_df.columns:
+        all_df["_outcome_href"] = all_df["_outcome_href"].apply(_as_list)
 
     if apply_filter:
         kept_df = all_df[all_df["filter_decision"] == "keep"].copy()
@@ -878,16 +872,21 @@ def main():
         kept_df = pd.DataFrame(enriched_rows)
         print(f"\n  Enrichment complete ({len(kept_df)}/{total} projects).")
 
-    # ---- Optional: Collect publications (opt-in via --publications) ----
-    publication_rows = []
-    if collect_publications:
-        print("\n  Fetching publications...")
+    # ---- Optional: Collect outcomes (opt-in via --outcomes) ----
+    outcome_rows = []
+    if collect_outcomes:
+        print("\nFetching outcome links...")
         for _, row in kept_df.iterrows():
-            try:
-                publication_rows.extend(fetch_publications(
-                    row["_publication_hrefs"], row, session, args.delay))
-            except Exception as e:
-                print(f"Publication error: {e}")
+            for href in row["_outcome_href"]:
+                outcome_rows.append({
+                    "project_id": row["project_id"],
+                    "grant_reference": row["grant_reference"],
+                    "title": row["title"],
+                    "outcome_href": href,
+                })
+        outcome_path = RAW_DIR / f"gtr_outcome_hrefs_{timestamp}.csv"
+        pd.DataFrame(outcome_rows).to_csv(outcome_path, index=False)
+        print(f"Saved {len(outcome_rows)} outcome links to outcome_links.csv")
 
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
@@ -921,20 +920,10 @@ def main():
     val_path = PROC_DIR / f"gtr_validation_sample_{timestamp}.csv"
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
 
-    # ---- Output 4: project outputs ----
-    publication_df = pd.DataFrame(publication_rows)
-    if collect_publications:
-        pub_path = PROC_DIR / f"gtr_outputs_{timestamp}.csv"
-        publication_df.to_csv(pub_path, index=False, encoding="utf-8")
-        publication_df.to_csv(PROC_DIR / "gtr_outputs_latest.csv",
-                            index=False, encoding="utf-8")
-
     print(f"\nOutputs in {PROC_DIR}/:")
     print(f"  {out_path.name}            (kept projects)")
     print(f"  {all_path.name}   (all projects + screening decision)")
     print(f"  {val_path.name}      (hand-code: fill is_ce_manual with keep/drop)")
-    if collect_publications:
-        print(f"  {pub_path.name}      (all publications)")
     print(f"\nCheckpoints in {CKPT_DIR}/ (safe to delete now this run finished cleanly).")
     print("\nDone.")
 
