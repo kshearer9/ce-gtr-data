@@ -635,25 +635,26 @@ def flatten_project(project, search_term):
 # Enrichment (runs after deduplication + screening, so only on unique keepers)
 # ---------------------------------------------------------------------------
 
-def enrich_row(row, delay, session, collect_sectors):
+def enrich_row(row, delay, session, collect_sectors, organisation_lookup, person_lookup, fund_lookup,):
     """Add fund value, PI name, organisation names, and (optionally) sectors.
     Enrichment runs after deduplication and filtering so we only make API calls
     for genuinely CE-relevant, unique projects."""
-    lead_org_name = fetch_org_name(row.get("_lead_org_href", ""), session, delay)
+    lead_org_name = organisation_lookup.get(row.get("_lead_org_href", ""),"")
+    row["lead_organisation"] = lead_org_name
 
     # Funding value, plus a flag marking whether GtR actually holds a value
     # (studentships and some other categories carry no per-project funding).
-    fund_value = fetch_fund_value(row.get("_fund_href", ""), session, delay)
+    fund_value = fund_lookup.get(row.get("_fund_href", ""),"")
     row["value_pounds"] = fund_value
     row["funding_data_available"] = bool(
         fund_value and str(fund_value) not in ("", "0", "0.0"))
 
-    row["principal_investigator"] = fetch_person_name(row.get("_pi_href", ""), session, delay)
-    row["lead_organisation"] = lead_org_name
+    row["principal_investigator"] = person_lookup.get(row.get("_pi_href", ""), "")
 
     # Participant organisations, deduplicated against the lead org
     participant_href = row.get("_participant_org_href", []) or []
-    names = [fetch_org_name(href, session, delay) for href in participant_href if href]
+    names = [organisation_lookup.get(href, "") for href in participant_href
+             if href]
     participant_set = {org.strip() for org in names if org and org.strip()}
     participant_set.discard((lead_org_name or "").strip())
     row["participant_organisations"] = "; ".join(sorted(participant_set))
@@ -663,6 +664,68 @@ def enrich_row(row, delay, session, collect_sectors):
         row["sectors"] = fetch_sectors_from_hrefs(
             row.get("_key_finding_href", []) or [], session, delay)
     return row
+
+def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup,
+    person_lookup, fund_lookup, tqdm_enabled=False):
+    """
+    Builds lookup tables (if not provided) and enriches kept_df in one pass.
+    Returns enriched DataFrame + lookup caches.
+    """
+    # Collect unique URLs before enriching
+    print("\nCollecting unique lookup URLs...")
+    org_urls = set()
+    person_urls = set()
+    fund_urls = set()
+    for _, row in kept_df.iterrows():
+        if row.get("_lead_org_href"):
+            org_urls.add(row["_lead_org_href"])
+        for href in row.get("_participant_org_href", []) or []:
+            if href:
+                org_urls.add(href)
+        if row.get("_pi_href"):
+            person_urls.add(row["_pi_href"])
+        if row.get("_fund_href"):
+            fund_urls.add(row["_fund_href"])
+    print(f"  Organisations: {len(org_urls)}")
+    print(f"  People:        {len(person_urls)}")
+    print(f"  Funds:         {len(fund_urls)}")
+
+    # Build lookup tables (only fetch missing entries)
+    if organisation_lookup is None:
+        organisation_lookup = {}
+    print("\nFetching organisations...")
+    iterator = tqdm(org_urls, desc="Organisations") if tqdm_enabled else org_urls
+    for href in iterator:
+        if href not in organisation_lookup:
+            organisation_lookup[href] = fetch_org_name(href, session, delay)
+    
+    if person_lookup is None:
+        person_lookup = {}
+    print("Fetching people...")
+    iterator = tqdm(person_urls, desc="People") if tqdm_enabled else person_urls
+    for href in iterator:
+        if href not in person_lookup:
+            person_lookup[href] = fetch_person_name(href, session, delay)
+
+    if fund_lookup is None:
+        fund_lookup = {}
+    print("Fetching funds...")
+    iterator = tqdm(fund_urls, desc="Funds") if tqdm_enabled else fund_urls
+    for href in iterator:
+        if href not in fund_lookup:
+            fund_lookup[href] = fetch_fund_value(href, session, delay)
+
+    # Apply enrichment
+    print("\nEnriching rows...")
+    enriched_rows = []
+    iterator = kept_df.iterrows()
+    if tqdm_enabled:
+        iterator = tqdm(iterator, total=len(kept_df), desc="Enriching")
+    for _, row in iterator:
+        enriched_rows.append(enrich_row(row.to_dict(), delay, session,
+                                        collect_sectors, organisation_lookup,
+                                        person_lookup, fund_lookup))
+    return pd.DataFrame(enriched_rows), organisation_lookup, person_lookup, fund_lookup
 
 
 # ---------------------------------------------------------------------------
@@ -699,7 +762,7 @@ def main():
     parser.add_argument("--max-pages", type=int, default=None)
     parser.add_argument("--delay", type=float, default=0.5,
                         help="Seconds between API calls (default 0.3; raise to be gentler)")
-    parser.add_argument("--out-dir", type=str, default=None),
+    parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--no-enrich", action="store_true",
                         help="Skip fund/org/person lookups (faster, less data)")
     parser.add_argument("--no-filter", action="store_true",
@@ -837,47 +900,52 @@ def main():
     # Phase 2: enrich only the unique keepers, checkpointing as we go.
     # -----------------------------------------------------------------------
     if enrich and len(kept_df) > 0:
-        enriched_rows, done_ids = ([], set())
-        if not args.fresh:
-            enriched_rows, done_ids = load_checkpoint(enriched_ckpt)
-            if done_ids:
-                print(f"\nResuming enrichment: {len(done_ids)} already done, "
-                      f"{len(kept_df) - len(done_ids)} to go")
+        enriched_rows, done_ids = load_checkpoint(enriched_ckpt)
+        if args.fresh:
+            enriched_rows = []
+            done_ids = set()
+        todo_df = kept_df[~kept_df["project_id"].astype(str).isin(done_ids)].copy()
+        print(f"\nEnrichment: {len(done_ids)} already done, {len(todo_df)} remaining")
+        organisation_lookup = {}
+        person_lookup = {}
+        fund_lookup = {}
 
-        todo = kept_df[~kept_df["project_id"].astype(str).isin(done_ids)]
-        total = len(kept_df)
+        if len(todo_df) > 0:
+            # Build lookup tables first
+            enriched_df, organisation_lookup, person_lookup, fund_lookup = enrich_dataset(
+                kept_df=todo_df,
+                session=session,
+                delay=args.delay,
+                collect_sectors=collect_sectors,
+                organisation_lookup=organisation_lookup,
+                person_lookup=person_lookup,
+                fund_lookup=fund_lookup,
+                tqdm_enabled=_HAS_TQDM
+            )
 
-        # Open the checkpoint in append mode so each enriched row is persisted
-        # as soon as it is produced (JSONL = one JSON object per line).
-        ckpt_fh = open(enriched_ckpt, "a", encoding="utf-8")
-        try:
-            iterator = todo.iterrows()
-            if _HAS_TQDM:
-                iterator = tqdm(iterator, total=len(todo), initial=0,
-                                desc="Enriching", unit="proj")
-            processed_since_flush = 0
-            for n, (_, row) in enumerate(iterator, start=1):
-                try:
-                    enriched = enrich_row(row.to_dict(), args.delay, session, collect_sectors)
+            # Checkpoint writing
+            ckpt_fh = open(enriched_ckpt, "a", encoding="utf-8")
+            try:
+                iterator = enriched_df.iterrows()
+                if _HAS_TQDM:
+                    iterator = tqdm(iterator, total=len(enriched_df), desc="Checkpointing")
+                processed_since_flush = 0
+                for _, row in iterator:
+                    enriched = row  # already enriched by enrich_dataset
                     enriched_rows.append(enriched)
-                    ckpt_fh.write(json.dumps(enriched, ensure_ascii=False) + "\n")
+                    ckpt_fh.write(json.dumps(enriched.to_dict(), ensure_ascii=False) + "\n")
                     processed_since_flush += 1
-                except Exception as exc:
-                    print(f"\n    Enrichment error on {row.get('project_id','?')}: {exc}")
-
-                if processed_since_flush >= args.checkpoint_every:
-                    ckpt_fh.flush()
-                    processed_since_flush = 0
-
-                if not _HAS_TQDM:
-                    done_now = len(done_ids) + n
-                    print(f"  Enriched {done_now}/{total} projects", end="\r")
-        finally:
-            ckpt_fh.flush()
-            ckpt_fh.close()
-
-        kept_df = pd.DataFrame(enriched_rows)
-        print(f"\n  Enrichment complete ({len(kept_df)}/{total} projects).")
+                    if processed_since_flush >= args.checkpoint_every:
+                        ckpt_fh.flush()
+                        processed_since_flush = 0
+            finally:
+                ckpt_fh.flush()
+                ckpt_fh.close()
+            kept_df = pd.DataFrame(enriched_rows)
+        else:
+            print("Nothing left to enrich.")
+            kept_df = pd.DataFrame(enriched_rows)
+        print(f"\nEnrichment complete: {len(kept_df)} total rows")
 
     # ---- Optional: Collect outcomes (opt-in via --outcomes) ----
     outcome_rows = []
