@@ -379,7 +379,15 @@ def _request_with_retries(session, url, params=None):
             last_exc = exc
             if not retryable or attempt == MAX_RETRIES:
                 raise
-            wait = BACKOFF_BASE * (2 ** (attempt - 1))
+            # Testing
+            if status == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                if retry_after:
+                    wait = float(retry_after)
+                else:
+                    wait = BACKOFF_BASE * (2 ** (attempt - 1))
+            else:
+                wait = BACKOFF_BASE * (2 ** (attempt - 1))
             print(f"\n    (attempt {attempt}/{MAX_RETRIES} failed: {exc}; "
                   f"retrying in {wait:.0f}s)", flush=True)
             time.sleep(wait)
@@ -689,7 +697,7 @@ def main():
     parser.add_argument("--terms", type=str, default=None)
     parser.add_argument("--size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=None)
-    parser.add_argument("--delay", type=float, default=0.3,
+    parser.add_argument("--delay", type=float, default=0.5,
                         help="Seconds between API calls (default 0.3; raise to be gentler)")
     parser.add_argument("--out-dir", type=str, default=None),
     parser.add_argument("--no-enrich", action="store_true",
@@ -704,7 +712,7 @@ def main():
                         help="Save enrichment progress every N projects (default 100)")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignore any existing checkpoint and start enrichment over")
-    parser.add_argument("--max-retries", type=int, default=5,
+    parser.add_argument("--max-retries", type=int, default=6,
                         help="Retries per request on timeout/server error (default 5)")
     parser.add_argument("--backoff-base", type=float, default=2.0,
                         help="Base seconds for exponential backoff between retries (default 2)")
@@ -883,7 +891,7 @@ def main():
                     "title": row["title"],
                     "outcome_href": href,
                 })
-        outcome_path = RAW_DIR / f"gtr_outcome_hrefs_latest.csv"
+        outcome_path = RAW_DIR / f"gtr_outcome_hrefs.csv"
         pd.DataFrame(outcome_rows).to_csv(outcome_path, index=False)
         print(f"  Saved {len(outcome_rows)} outcome links to {outcome_path}")
 
