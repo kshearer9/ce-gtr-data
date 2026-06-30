@@ -911,7 +911,7 @@ def main():
         fund_lookup = {}
 
         if len(todo_df) > 0:
-            # Build lookup tables first
+            # Build lookup tables
             enriched_df, organisation_lookup, person_lookup, fund_lookup = enrich_dataset(
                 kept_df=todo_df,
                 session=session,
