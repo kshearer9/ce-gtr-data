@@ -883,7 +883,7 @@ def main():
                     "title": row["title"],
                     "outcome_href": href,
                 })
-        outcome_path = RAW_DIR / f"gtr_outcome_hrefs.csv"
+        outcome_path = RAW_DIR / f"gtr_outcome_hrefs_latest.csv"
         pd.DataFrame(outcome_rows).to_csv(outcome_path, index=False)
         print(f"  Saved {len(outcome_rows)} outcome links to {outcome_path}")
 

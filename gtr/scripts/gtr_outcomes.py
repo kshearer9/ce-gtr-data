@@ -43,23 +43,6 @@ def parse_primary_audience(pa):
         return pa
     return ""
 
-def parse_impact_types(it):
-    if isinstance(it, dict):
-        return gtr.format_with_pct(it.get("item", []))
-
-    if isinstance(it, list):
-        cleaned = []
-        for x in it:
-            if isinstance(x, dict) and x.get("text"):
-                cleaned.append(x["text"])
-            elif isinstance(x, str):
-                cleaned.append(x)
-        return "; ".join(cleaned)
-
-    if isinstance(it, str):
-        return it
-
-    return ""
 
 def extract_year(data):
     years = data.get("yearsOfDissemination")
@@ -109,6 +92,14 @@ def extract_type(data, href):
         return "Intellectual properties"
     return ""
 
+def extract_funding(data):
+    amount = data.get("amount") or {}
+    formatted_amount = (
+        f"{amount.get('currencyCode', '')} {amount.get('amount', '')}"
+        if amount else ""
+    )
+    return formatted_amount
+
 
 # ---------------------------------------------------------------------------
 # PARSING
@@ -126,15 +117,16 @@ def parse_outcome(data, href, project_info):
         "title": data.get("title") or "",
         "description": gtr.clean_text(data.get("description") or ""),
         "type": extract_type(data, href),
+        "journal_title": data.get("journalTitle"),
         "primary_audience": parse_primary_audience(
-            data.get("primaryAudience") or data.get("primaryAudiences")
-        ),
+            data.get("primaryAudience") or data.get("primaryAudiences")),
         "year_of_dissemination": extract_year(data),
         "impact": gtr.clean_text(
-            data.get("impact") or data.get("narrative") or data.get("summary") or ""
-        ),
+            data.get("impact") or data.get("narrative") or data.get("summary") or ""),
         "sector": data.get("sector") or "",
-        "impact_types": parse_impact_types(data.get("impactTypes")),
+        "funding_id": data.get("fundingId"),
+        "funding_amount": extract_funding(data),
+        "url": data.get("supportingUrl") or data.get("publicationUrl")
     }
 
 
