@@ -15,9 +15,9 @@ export.
 
 Method (deterministic, reproducible)
 ------------------------------------
-1. One CSV was downloaded from the GtR website for each of the six search terms
+1. One CSV was downloaded from the GtR website for each of the search terms
    used in the API collection (mirroring the search strategy).
-2. The six CSVs are concatenated and deduplicated on the GtR project identifier.
+2. The CSVs are concatenated and deduplicated on the GtR project identifier.
 3. The combined export is joined onto the API dataset by EXACT MATCH on project
    identifier (a stable unique key - no fuzzy/name matching is used).
 4. All website-export columns are carried in with a 'csv_' prefix so they sit
@@ -26,10 +26,17 @@ Method (deterministic, reproducible)
    website export, so the (small) unmatched residue is transparent.
 
 Inputs  (paths relative to repo root; adjust CSV_DIR/API_PATH if needed):
-  - API dataset:        API Data/processed/gtr_ce_projects_latest.csv
-  - Six website CSVs:   GtR CSVs/*.csv
+  - API dataset:        data/processed/gtr_ce_projects_latest.csv
+  - Website CSVs:       GtR CSVs/*.csv
 Output:
-  - API Data/processed/gtr_ce_projects_enriched.csv
+  - data/processed/gtr_ce_projects_enriched.csv
+
+Note on CSV coverage: the final search vocabulary uses five terms (closed-loop
+was dropped). The closed-loop website CSV is therefore OPTIONAL here: if the
+file is present it is still used (its projects simply may not all match the
+current dataset, which is harmless), and if it is absent the script proceeds
+without it. The reported match rate is the check that matters - if it is high
+(~99%), the available CSVs cover the dataset well and no re-download is needed.
 """
 
 from pathlib import Path
@@ -38,18 +45,23 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Configuration - paths relative to the repo root (run from there)
 # ---------------------------------------------------------------------------
-API_PATH = Path("API Data/processed/gtr_ce_projects_latest.csv")
+API_PATH = Path("data/processed/gtr_ce_projects_latest.csv")
 CSV_DIR = Path("GtR CSVs")
-OUT_PATH = Path("API Data/processed/gtr_ce_projects_enriched.csv")
+OUT_PATH = Path("data/processed/gtr_ce_projects_enriched.csv")
 
-# The six website exports, one per search term. Filenames as downloaded.
+# The website exports, one per search term. Filenames as downloaded.
+# Closed-loop is listed but treated as OPTIONAL (it is no longer a search term);
+# any file that is missing is skipped with a warning rather than aborting.
 CSV_FILES = [
     "Circular Economy Projects.csv",
     "Industrial Symbiosis Projects.csv",
-    "Closed-loop Projects.csv",
     "Urban mining projects.csv",
     "Remanufacturing projects.csv",
     "Circular bioeconomy.csv",
+]
+# Optional legacy CSVs - used if present, silently skipped if not.
+OPTIONAL_CSV_FILES = [
+    "Closed-loop Projects.csv",
 ]
 
 # The website export's unique project key, and the API dataset's matching key.
@@ -65,13 +77,22 @@ def main():
     api = pd.read_csv(API_PATH)
     print(f"API dataset:            {len(api)} projects")
 
-    # ---- Load and combine the six website CSVs ----
+    # ---- Load and combine the website CSVs ----
     frames = []
     for fn in CSV_FILES:
         path = CSV_DIR / fn
         if not path.exists():
-            raise SystemExit(f"Missing website CSV: {path}")
+            raise SystemExit(f"Missing required website CSV: {path}")
         frames.append(pd.read_csv(path, low_memory=False))
+    # Optional CSVs: use if present, warn and skip if not.
+    for fn in OPTIONAL_CSV_FILES:
+        path = CSV_DIR / fn
+        if path.exists():
+            frames.append(pd.read_csv(path, low_memory=False))
+            print(f"  (optional CSV included: {fn})")
+        else:
+            print(f"  (optional CSV not found, skipping: {fn})")
+
     combined = pd.concat(frames, ignore_index=True)
     print(f"Website CSVs combined:  {len(combined)} rows (before dedup)")
 
@@ -113,6 +134,10 @@ def main():
     print(f"\nMatched to website export: {matched}/{total} "
           f"({100*matched/total:.1f}%)")
     print(f"Unmatched (API fields only): {total - matched}")
+    if total and matched / total < 0.95:
+        print("  WARNING: match rate below 95%. The website CSVs may not fully\n"
+              "  cover the current project set - consider re-downloading fresh\n"
+              "  CSVs from the GtR website for the five current search terms.")
 
     def cov(col):
         if col not in enriched.columns:
