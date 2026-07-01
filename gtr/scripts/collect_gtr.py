@@ -14,9 +14,10 @@ Method: a two-stage protocol following systematic-review conventions (PRISMA
     Circular Economy Glossary (2021).
 
   Stage 2 - SCREENING
-    Each project is classified against a concept-block inclusion rule
-    (core / strategy / ambiguous terms with Boolean logic).
-    Screening checks title + abstract + technical summary + potential impact.
+    Each project is classified against a three-tier inclusion rule
+    (Tier 1 defining / Tier 2 characteristic / Tier 3 supplementary terms with
+    Boolean logic). Screening checks title + abstract + technical summary +
+    potential impact.
 
 Flow: all projects are collected and flattened first, deduplicated on
 project_id, then screened. Only unique, kept projects are enriched (lead org,
@@ -150,55 +151,80 @@ def save_cache(url, data):
 DEFAULT_TERMS = [
     "circular economy",
     "industrial symbiosis",
-    "closed-loop",
     "urban mining",
     "remanufacturing",
     "circular bioeconomy",
 ]
 
 # ---------------------------------------------------------------------------
-# Stage 2 - screening vocabulary (concept blocks)
+# Stage 2 - screening vocabulary (three tiers)
 # ---------------------------------------------------------------------------
-# Inclusion rule (in classify_ce):
-#   INCLUDE if  (>=1 core)
-#           OR  (>=2 strategy)
-#           OR  (>=1 ambiguous AND (>=1 strategy OR >=1 core))
+# Tiers are ordered by how reliably a term signals circular economy. The
+# inclusion rule (in classify_ce) is:
+#   INCLUDE if  (>=1 Tier 1 term)
+#           OR  (>=2 distinct Tier 2 terms)
+#           OR  (>=1 Tier 2 term AND >=1 Tier 3 term)
+# Tier 3 terms never trigger inclusion on their own, only as corroboration.
 
-CORE_PATTERNS = [
+# Tier 1 - DEFINING terms. A single match is sufficient for inclusion.
+# These are essentially unique to circular economy discourse. The set is
+# deliberately aligned with the Stage 1 search terms (a term reliable enough to
+# search on is reliable enough to include on), plus two equally-specific terms
+# (cradle-to-cradle, reverse logistics) that the EMF glossary defines. The
+# "circular <X> economy" patterns capture domain-qualified variants such as
+# "circular textile economy" or "circular plastics economy", which name the
+# concept just as explicitly as the bare phrase.
+TIER1_PATTERNS = [
     r"circular econom\w*",
-    r"circularity",
+    r"circular \w+ econom\w*",
+    r"circular \w+ \w+ econom\w*",
     r"industrial symbiosis",
-    r"cradle[\s-]to[\s-]cradle",
     r"urban mining",
-    r"reverse logistics",
-    r"regenerati(?:ve|on)",
-    r"technical cycle",
-    r"biological cycle",
     r"remanufactur\w*",
-    r"upcycl\w*",
-    r"downcycl\w*",
-    r"design out waste",
     r"circular bioeconom\w*",
-    r"bioeconom\w*",
+    r"cradle[\s-]to[\s-]cradle",
+    r"reverse logistics",
 ]
 
-STRATEGY_PATTERNS = [
+# Tier 2 - CHARACTERISTIC terms. Two or more DISTINCT matches are required for
+# inclusion. These are genuine CE concepts (Kirchherr 2017; EMF glossary 2021)
+# that nonetheless see some cross-domain use, so a single occurrence is not
+# decisive but two independent ones are. This list was purified iteratively:
+# terms that proved too ambiguous on inspection (closed-loop -> control
+# engineering; repurpose -> generic method-repurposing; anaerobic digestion ->
+# bioprocess/synthetic-biology) were demoted to Tier 3.
+TIER2_PATTERNS = [
+    r"circularity",
+    r"technical cycle",
+    r"biological cycle",
+    r"refurbish\w*",
+    r"secondary material\w*",
+    r"non-virgin",
+    r"virgin material\w*",
+    r"design out waste",
+    r"regenerative production",
+    r"regenerati\w*\s+(?:nature|natural system\w*|design)",
+    r"industrial ecology",
+]
+
+# Tier 3 - SUPPLEMENTARY terms. These never trigger inclusion on their own,
+# however many match. They are the lowest-value, most cross-domain-ambiguous
+# strategies: the literature itself ranks recycling/recovery as "last resort"
+# and states that "a firm merely focusing on recycling is not circular"
+# (Kirchherr 2017; EMF glossary 2021). A Tier 3 term counts only when it
+# corroborates at least one Tier 2 term (see classify_ce). The demoted
+# ambiguous terms (closed-loop, repurpose, anaerobic digestion) live here.
+TIER3_PATTERNS = [
     r"recycl\w*",
     r"reus\w*",
     r"re-us\w*",
-    r"refurbish\w*",
     r"repair\w*",
-    r"repurpos\w*",
     r"recover\w*",
-    r"secondary material\w*",
-    r"non-virgin",
-    r"product life",
+    r"repurpos\w*",
+    r"closed[\s-]loop",
+    r"anaerobic digestion",
     r"waste hierarchy",
     r"resource efficien\w*",
-]
-
-AMBIGUOUS_PATTERNS = [
-    r"closed[\s-]loop",
 ]
 
 # ---------------------------------------------------------------------------
@@ -316,25 +342,35 @@ def find_matches(text, patterns):
 
 
 def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
-    """Apply the concept-block inclusion rule across all available text fields.
+    """Apply the three-tier inclusion rule across all available text fields.
+
+    Inclusion rule:
+        INCLUDE if  (>=1 Tier 1 term)
+                OR  (>=2 distinct Tier 2 terms)
+                OR  (>=1 Tier 2 term AND >=1 Tier 3 term)
+
+    Tier 3 terms never trigger inclusion alone, however many match; they only
+    corroborate a Tier 2 term. This encodes the literature's position that the
+    lowest-value strategies (recycling, recovery, reuse, repair) do not by
+    themselves constitute circular economy.
 
     Returns:
         include (bool): True if the project passes Stage 2 screening
-        matches (dict): which patterns matched in each block (for audit)
+        matches (dict): which patterns matched in each tier (for audit)
     """
     text = " ".join([
         title or "", abstract or "", tech_abstract or "", potential_impact or "",
     ])
-    core = find_matches(text, CORE_PATTERNS)
-    strategy = find_matches(text, STRATEGY_PATTERNS)
-    ambiguous = find_matches(text, AMBIGUOUS_PATTERNS)
+    tier1 = find_matches(text, TIER1_PATTERNS)
+    tier2 = find_matches(text, TIER2_PATTERNS)
+    tier3 = find_matches(text, TIER3_PATTERNS)
 
     include = (
-        len(core) >= 1
-        or len(strategy) >= 2
-        or (len(ambiguous) >= 1 and (len(strategy) >= 1 or len(core) >= 1))
+        len(tier1) >= 1
+        or len(tier2) >= 2
+        or (len(tier2) >= 1 and len(tier3) >= 1)
     )
-    return include, {"core": core, "strategy": strategy, "ambiguous": ambiguous}
+    return include, {"tier1": tier1, "tier2": tier2, "tier3": tier3}
 
 
 # ---------------------------------------------------------------------------
@@ -617,9 +653,9 @@ def flatten_project(project, search_term):
         "gtr_url": gtr_url,
         "matched_search_term": search_term,
         "filter_decision": "keep" if include else "drop",
-        "core_matches": "; ".join(matches["core"]),
-        "strategy_matches": "; ".join(matches["strategy"]),
-        "ambiguous_matches": "; ".join(matches["ambiguous"]),
+        "tier1_matches": "; ".join(matches["tier1"]),
+        "tier2_matches": "; ".join(matches["tier2"]),
+        "tier3_matches": "; ".join(matches["tier3"]),
         # Internal href fields (stripped before output)
         "_fund_href": fund_href,
         "_pi_href": pi_href,
@@ -988,7 +1024,7 @@ def main():
     sample["is_ce_manual"] = ""
     val_cols = [
         "project_id", "title", "matched_search_term", "filter_decision",
-        "core_matches", "strategy_matches", "ambiguous_matches",
+        "tier1_matches", "tier2_matches", "tier3_matches",
         "abstract_preview", "tech_abstract_preview", "potential_impact_preview",
         "gtr_url", "is_ce_manual",
     ]
