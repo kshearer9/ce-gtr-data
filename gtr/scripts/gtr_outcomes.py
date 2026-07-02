@@ -73,6 +73,7 @@ def main():
     if args.test_limit:
         df = df.head(args.test_limit)
 
+    all_outcomes = []
     raw_by_type = defaultdict(list)
 
     for row in tqdm(df.itertuples(index=False), total=len(df), desc="Fetching outcomes"):
@@ -84,13 +85,17 @@ def main():
         if not data:
             continue
 
-        raw_by_type[outcome_type].append({
+        outcome = {
             "project_id": row.project_id,
             "grant_reference": row.grant_reference,
             "project_title": row.title,
             "href": row.outcome_href,
+            "outcome_type": outcome_type,
             **data
-        })
+        }
+
+        raw_by_type[outcome_type].append(outcome)
+        all_outcomes.append(outcome)
 
         for outcome_type, rows in raw_by_type.items():
             df_out = pd.json_normalize(rows, sep=".")
@@ -103,6 +108,11 @@ def main():
                 OUTCOME_DIR / f"gtr_{outcome_type}_latest.csv",
                 index=False
             )
+
+    full_df_out = pd.json_normalize(all_outcomes, sep=".")
+    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_{timestamp}.csv")
+    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_latest.csv")
+
 
     gtr.flush_cache()
     gtr.conn.close()
