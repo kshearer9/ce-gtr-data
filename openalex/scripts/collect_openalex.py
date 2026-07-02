@@ -36,9 +36,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPENALEX_DIR = SCRIPT_DIR.parent    
 ROOT_DIR = OPENALEX_DIR.parent   
-
 DATA_DIR = OPENALEX_DIR / "data"
-SHARED_DIR = ROOT_DIR / "shared-data" # Temporary space until we finalise this data
+GTR_DATA_DIR = ROOT_DIR / "gtr" / "data" / "processed"
 
 # ---------------------------------------------------------------------------
 # API CONFIG
@@ -287,7 +286,7 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv(SHARED_DIR / "gtr_ce_projects_clean.csv", encoding = "latin1")
+    df = pd.read_csv(GTR_DATA_DIR / "gtr_ce_projects_latest.csv", encoding = "latin1")
 
     if args.test_limit:
         df = df.head(args.test_limit)
