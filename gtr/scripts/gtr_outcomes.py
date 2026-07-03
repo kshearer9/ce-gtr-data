@@ -69,7 +69,7 @@ def main():
     session = requests.Session()
 
     file_path = RAW_DIR / "gtr_outcome_hrefs.csv"
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(file_path, encoding = "utf-8")
     if args.test_limit:
         df = df.head(args.test_limit)
 
@@ -101,17 +101,19 @@ def main():
             df_out = pd.json_normalize(rows, sep=".")
             df_out.to_csv(
                 OUTCOME_DIR / f"gtr_{outcome_type}_{timestamp}.csv",
-                index=False
+                index=False, encoding="utf-8"
             )
 
             df_out.to_csv(
                 OUTCOME_DIR / f"gtr_{outcome_type}_latest.csv",
-                index=False
+                index=False, encoding="utf-8"
             )
 
     full_df_out = pd.json_normalize(all_outcomes, sep=".")
-    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_{timestamp}.csv")
-    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_latest.csv")
+    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_{timestamp}.csv", 
+                       index=False, encoding="utf-8")
+    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_latest.csv",
+                       index=False, encoding="utf-8")
 
 
     gtr.flush_cache()
