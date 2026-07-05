@@ -28,6 +28,8 @@ import json
 import time
 import sqlite3
 from pathlib import Path
+import re
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # DIRECTORY CONFIG
@@ -37,7 +39,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OPENALEX_DIR = SCRIPT_DIR.parent    
 ROOT_DIR = OPENALEX_DIR.parent   
 DATA_DIR = OPENALEX_DIR / "data"
-GTR_DATA_DIR = ROOT_DIR / "gtr" / "data" / "processed"
+GTR_DATA_DIR = ROOT_DIR / "gtr" / "data" / "cleaned"
 
 # ---------------------------------------------------------------------------
 # API CONFIG
@@ -49,14 +51,14 @@ HEADERS = {
 }
 
 # ---------------------------------------------------------------------------
-# GLOBAL STATE
+# GLOBAL VARIABLES
 # ---------------------------------------------------------------------------
 
 API_DOWN = False
 SKIPPED_LOOKUP = {}
 
 # ---------------------------------------------------------------------------
-# CACHE
+# CACHE SETUP
 # ---------------------------------------------------------------------------
 
 # Cache to disk to avoid repeated API calls
@@ -123,6 +125,42 @@ def save_work(work_id, work):
         (work_id, json.dumps(work))
     )
 
+
+# ---------------------------------------------------------------------------
+# SEARCH HELPERS
+# ---------------------------------------------------------------------------
+
+
+def clean_search_title(title):
+    """
+    Normalise project titles before sending them to OpenAlex.
+
+    OpenAlex search can struggle with some punctuation, so we:
+    - replace "|" with a space
+    - collapse multiple spaces
+    - strip leading/trailing whitespace
+    """
+    title = str(title)
+    title = title.replace("|", " ")
+    title = re.sub(r"\s+", " ", title)
+    return title.strip()
+
+
+def fallback_search_title(title):
+    """
+    Produce a simplified version of a project title for a second search
+    if the original title returns no useful matches.
+    """
+    title = clean_search_title(title)
+    # Remove anything after a colon
+    title = title.split(":")[0]
+    # Remove punctuation
+    title = re.sub(r"[^\w\s]", " ", title)
+    # Collapse spaces again
+    title = re.sub(r"\s+", " ", title)
+    return title.strip()
+
+
 # ---------------------------------------------------------------------------
 # API FETCHERS
 # ---------------------------------------------------------------------------
@@ -170,27 +208,37 @@ def safe_get(url, params=None, headers=None, timeout=15, retries=3, backoff=0.5,
         API_DOWN = True
     return None
 
-def find_award(search_title, raw_title):
+
+def find_award(raw_title):
     """
-    Search the OpenAlex Awards API using a UKRI project title and
-    return the top 5 matching award records.
+    Search the OpenAlex Awards API using a cleaned UKRI project title.
+    Results are cached using the cleaned title so repeated searches
+    for equivalent titles do not trigger another API request.
     """
-    # Use cached result if available
-    cached = get_award(raw_title)
+    search_title = clean_search_title(raw_title)
+    cached = get_award(search_title)
     if cached is not None:
         return cached
-    
-    # Clean title for search (API can't search "|")
-    search_title = raw_title.replace("|", " ")
     url = "https://api.openalex.org/awards"
     params = {"search": search_title, "per-page": 50, "api_key": API_KEY}
-    r = safe_get(url, params=params, headers=HEADERS, project_title=search_title)
+    r = safe_get(url, params=params, headers=HEADERS, project_title=raw_title)
     if r is None:
         return []
-    data = r.json()
-    results = data.get("results", [])
-    save_award(raw_title, results)
+    results = r.json().get("results", [])
+    fallback = None
+    if not results:
+        fallback = fallback_search_title(raw_title)
+        if fallback != search_title:
+            params["search"] = fallback
+            r = safe_get(url, params=params, headers=HEADERS, 
+                         project_title=raw_title)
+            if r is not None:
+                results = r.json().get("results", [])
+    save_award(search_title, results)
+    if fallback and fallback != search_title:
+        save_award(fallback, results)
     return results
+
 
 def fetch_works_batch(work_ids):
     """
@@ -225,6 +273,7 @@ def fetch_works_batch(work_ids):
 # ---------------------------------------------------------------------------
 # TRANSFORM / PARSING
 # ---------------------------------------------------------------------------
+
 
 def reconstruct_abstract(inverted_index):
     """
@@ -286,10 +335,12 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv(GTR_DATA_DIR / "gtr_ce_projects_latest.csv", encoding = "latin1")
+    df = pd.read_csv(GTR_DATA_DIR / "gtr_ce_projects_clean.csv", encoding = "utf-8")
 
     if args.test_limit:
         df = df.head(args.test_limit)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Iterate through projects and resolve OpenAlex awards + outputs
     results = []
@@ -315,8 +366,7 @@ def main():
         grant_reference = str(grant_reference).strip()
 
         # Match OpenAlex award to UKRI grant reference
-        search_title = project_title.replace(" | ", " ")
-        awards = find_award(search_title, project_title)
+        awards = find_award(project_title)
         award = None
         for candidate in awards:
             award_ref = str(candidate.get("funder_award_id", "")).strip()
@@ -407,19 +457,22 @@ def main():
 
     # Save outputs
     out = pd.DataFrame(results)
-    out.to_csv(DATA_DIR / "openalex_outputs.csv", index=False)
+    out.to_csv(DATA_DIR / f"openalex_outputs_{timestamp}.csv", index=False, encoding="utf-8")
+    out.to_csv(DATA_DIR / "openalex_outputs_latest.csv", index=False, encoding="utf-8")
 
-    awards_df = pd.json_normalize(award_results)
-    awards_df.to_csv(DATA_DIR / "openalex_awards.csv", index=False)
+    projects_df = pd.json_normalize(award_results)
+    projects_df.to_csv(DATA_DIR / f"openalex_projects_{timestamp}.csv", index=False, encoding="utf-8")
+    projects_df.to_csv(DATA_DIR / "openalex_projects_latest.csv", index=False, encoding="utf-8")
 
-    print(f"\nSaved {len(out)} funded output(s).")
-    print(f"Saved {len(awards_df)} award(s).")
+    print(f"\nSaved {len(out)} funded outputs.")
+    print(f"Saved {len(projects_df)} projects.")
     
     # Optionally export skipped projects for evaluation
     if args.save_skipped:
         skipped_df = pd.DataFrame(skipped_projects)
-        skipped_df.to_csv(DATA_DIR / "openalex_missing_outputs.csv", index=False)
-        print(f"Saved {len(skipped_df)} skipped project(s).")
+        skipped_df.to_csv(DATA_DIR / f"openalex_skipped_projects_{timestamp}.csv", index=False, encoding="utf-8")
+        skipped_df.to_csv(DATA_DIR / "openalex_skipped_projects_latest.csv", index=False, encoding="utf-8")
+        print(f"Saved {len(skipped_df)} GtR projects that did not appear in OpenAlex or had no outputs.")
 
     conn.close()
 
