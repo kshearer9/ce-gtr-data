@@ -124,6 +124,7 @@ def save_work(work_id, work):
         """,
         (work_id, json.dumps(work))
     )
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,8 @@ def fallback_search_title(title):
 # API FETCHERS
 # ---------------------------------------------------------------------------
 
-def safe_get(url, params=None, headers=None, timeout=15, retries=3, backoff=0.5, project_title=None):
+def safe_get(url, params=None, headers=None, timeout=15, retries=5, 
+             backoff=0.8, session = None, project_title=None):
     """
     Wrapper around requests.get with:
     - retry + exponential backoff
@@ -174,42 +176,58 @@ def safe_get(url, params=None, headers=None, timeout=15, retries=3, backoff=0.5,
     """
     global API_DOWN
     last_exception = None
+
     for attempt in range(1, retries + 1):
         try:
-            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            r = session.get(url, params=params, headers=headers, timeout=timeout)
+            # Rate limit handling (429)
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else backoff * (2 ** (attempt - 1))
+                print(f"[HTTP 429] Rate limited. Waiting {wait:.1f}s (attempt {attempt}/{retries})")
+                time.sleep(wait)
+                continue
             r.raise_for_status()
-            time.sleep(0.3)
+            time.sleep(0.2)
             return r
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code
-            if 400 <= status < 500:
+
+            # Non-retryable client errors
+            if 400 <= status < 500 and status != 429:
                 if project_title:
                     SKIPPED_LOOKUP[project_title] = {
                         "status": status,
                         "search": params.get("search") if params else "",
                     }
+
                 print(f"[HTTP {status}] Skipping project:")
-                print(f"    Title: {repr(project_title)}")
+                print(f"    Title: {project_title}")
                 print(f"    Search: {params.get('search') if params else ''}")
                 return None
+
             last_exception = e
-        except requests.exceptions.ConnectionError as e:
+
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.RequestException) as e:
+
             last_exception = e
-        except requests.exceptions.Timeout as e:
-            last_exception = e
-        except requests.exceptions.RequestException as e:
-            last_exception = e
+
+        # Retry logging
         print(f"[Attempt {attempt}/{retries}] Error fetching {url}: {last_exception}")
         if attempt < retries:
-            time.sleep(backoff * (2 ** (attempt - 1)))
+            wait = backoff * (2 ** (attempt - 1))
+            time.sleep(wait)
+
+    # Final failure
     print(f"[Failed after {retries} retries] {url}: {last_exception}")
-    # Only stop the script if the API appears genuinely unreachable
     if isinstance(last_exception, requests.exceptions.ConnectionError):
         API_DOWN = True
     return None
 
 
-def find_award(raw_title):
+def find_award(raw_title, session):
     """
     Search the OpenAlex Awards API using a cleaned UKRI project title.
     Results are cached using the cleaned title so repeated searches
@@ -221,7 +239,7 @@ def find_award(raw_title):
         return cached
     url = "https://api.openalex.org/awards"
     params = {"search": search_title, "per-page": 50, "api_key": API_KEY}
-    r = safe_get(url, params=params, headers=HEADERS, project_title=raw_title)
+    r = safe_get(url, params=params, headers=HEADERS, session = session, project_title=raw_title)
     if r is None:
         return []
     results = r.json().get("results", [])
@@ -231,7 +249,7 @@ def find_award(raw_title):
         if fallback != search_title:
             params["search"] = fallback
             r = safe_get(url, params=params, headers=HEADERS, 
-                         project_title=raw_title)
+                         session = session, project_title=raw_title)
             if r is not None:
                 results = r.json().get("results", [])
     save_award(search_title, results)
@@ -240,7 +258,7 @@ def find_award(raw_title):
     return results
 
 
-def fetch_works_batch(work_ids):
+def fetch_works_batch(work_ids, session):
     """
     Batch fetch OpenAlex works. Updates work_cache and returns nothing.
     """
@@ -260,7 +278,7 @@ def fetch_works_batch(work_ids):
     # OpenAlex supports OR-style filtering via |
     params = {"filter": f"openalex:{'|'.join(uncached)}", "per-page": len(uncached), "api_key": API_KEY}
 
-    r = safe_get(url, params=params, headers=HEADERS)
+    r = safe_get(url, params=params, headers=HEADERS, session = session)
     if r is None:
         print(f"[Batch fetch failed] {len(uncached)} works")
         return
@@ -341,6 +359,7 @@ def main():
         df = df.head(args.test_limit)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session = requests.Session()
 
     # Iterate through projects and resolve OpenAlex awards + outputs
     results = []
@@ -366,7 +385,7 @@ def main():
         grant_reference = str(grant_reference).strip()
 
         # Match OpenAlex award to UKRI grant reference
-        awards = find_award(project_title)
+        awards = find_award(project_title, session)
         award = None
         for candidate in awards:
             award_ref = str(candidate.get("funder_award_id", "")).strip()
@@ -422,7 +441,13 @@ def main():
     work_ids_list = list(all_work_ids)
     for i in tqdm(range(0, len(work_ids_list), BATCH_SIZE)):
         batch = work_ids_list[i:i + BATCH_SIZE]
-        fetch_works_batch(batch)
+        for _ in range(3):
+            try:
+                fetch_works_batch(batch, session)
+                break
+            except Exception as e:
+                print(f"Batch failed, retrying: {e}")
+                time.sleep(2)
 
     # Build output using cache
     for item in award_lookup.values():
