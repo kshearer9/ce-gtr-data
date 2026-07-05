@@ -292,13 +292,12 @@ def main():
         df = df.head(args.test_limit)
 
     # Iterate through projects and resolve OpenAlex awards + outputs
-    processed = 0
     results = []
+    award_results = []
     skipped_projects = []
     all_work_ids = set()
     award_lookup = {}
     for row in tqdm(df.itertuples(index=False), total=len(df)):
-        processed += 1
         if API_DOWN:
             print("Stopping run: OpenAlex API is unreachable")
             break
@@ -340,27 +339,32 @@ def main():
                 "reason": reason,
             })
             continue
+
+        # Save all award metadata
+        award_row = {
+            "project_id": row.project_id,
+            "project_title": row.title,
+            "grant_reference": grant_reference
+        }
+
+        award_row.update(award)
+        award_results.append(award_row)
         
         # Collect all unique work IDs for batch retrieval
         work_ids = [
             url.split("/")[-1]
             for url in award.get("funded_outputs", [])
         ]
-        if not work_ids:
-            skipped_projects.append({
-                "project_id": row.project_id,
-                "project_title": project_title,
-                "grant_reference": grant_reference,
-                "reason": "no outputs",
-            })
-            continue
-        all_work_ids.update(work_ids)
+
         award_lookup[row.project_id] = {
             "row": row,
             "grant_reference": grant_reference,
             "award": award,
             "work_ids": work_ids
         }
+
+        all_work_ids.update(work_ids)
+
     
     # Batch fetch all works
     print(f"\nFetching {len(all_work_ids)} unique works in batches...")
@@ -375,6 +379,9 @@ def main():
         row = item["row"]
         grant_reference = item["grant_reference"]
         award = item["award"]
+
+        if not item["work_ids"]:
+            continue
 
         retrieved = 0
         for work_id in item["work_ids"]:
@@ -398,9 +405,15 @@ def main():
                 "reason": "no outputs",
             })
 
+    # Save outputs
     out = pd.DataFrame(results)
     out.to_csv(DATA_DIR / "openalex_outputs.csv", index=False)
+
+    awards_df = pd.json_normalize(award_results)
+    awards_df.to_csv(DATA_DIR / "openalex_awards.csv", index=False)
+
     print(f"\nSaved {len(out)} funded output(s).")
+    print(f"Saved {len(awards_df)} award(s).")
     
     # Optionally export skipped projects for evaluation
     if args.save_skipped:
