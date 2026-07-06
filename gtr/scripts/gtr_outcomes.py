@@ -7,9 +7,13 @@ from tqdm import tqdm
 import collect_gtr as gtr
 from collections import defaultdict
 import re
+import sqlite3
+import json
+import time
 
 HEADERS = {
-    "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)"
+    "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
+    "Accept": "application/json"
 }
 
 # ---------------------------------------------------------------------------
@@ -24,18 +28,59 @@ RAW_DIR = DATA_DIR / "raw"
 PROC_DIR = DATA_DIR / "processed"
 OUTCOME_DIR = PROC_DIR / "outcomes"
 
-CACHE_DIR = DATA_DIR / "cache"
+CACHE_DIR = GTR_DIR / "cache"
 CKPT_DIR = DATA_DIR / "checkpoints"
 
 for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-# HTTP status codes that are worth retrying (server-side / transient).
-RETRYABLE_STATUS = {500, 502, 503, 504, 429}
 
-# Tunable retry behaviour (overridable from the CLI via globals set in main()).
-MAX_RETRIES = 5          # attempts per request before giving up
-BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
+# ---------------------------------------------------------------------------
+# CACHE
+# ---------------------------------------------------------------------------
+
+CACHE_DB = CACHE_DIR / "gtr_outcome_cache.db"
+conn = sqlite3.connect(CACHE_DB)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS outcome_cache (
+    href TEXT PRIMARY KEY,
+    response TEXT
+)
+""")
+conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# CACHE HELPERS
+# ---------------------------------------------------------------------------
+
+def normalise_key(key: str) -> str:
+    return key.strip()
+
+
+def get_cache(href):
+    href = href.strip()
+    cursor.execute(
+        "SELECT response FROM outcome_cache WHERE href = ?",
+        (href,)
+    )
+    row = cursor.fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_cache(href, data):
+    href = href.strip()
+    cursor.execute(
+        f"""
+        INSERT OR REPLACE INTO outcome_cache (href, response)
+        VALUES (?, ?)
+        """,
+        (href, json.dumps(data))
+    )
+    conn.commit()
+
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -45,13 +90,59 @@ def get_outcome_type(href):
     m = re.search(r"/outcomes/([^/]+)/", href)
     return m.group(1) if m else None
 
+
+# ---------------------------------------------------------------------------
+# API FETCHERS
+# ---------------------------------------------------------------------------
+
+def fetch_json(href, session, delay, max_retries, backoff_base, failed):
+    """Generic helper: fetch any GtR API URL and return parsed JSON.
+    Retries transient failures; returns {} only if all retries are exhausted,
+    so enrichment of a single project can fail softly without killing the run."""
+    if not href:
+        return {}
+
+    # Check SQLite cache first
+    cached = get_cache(href)
+    if cached is not None:
+        return cached
+    
+    try:
+        data = gtr._request_with_retries(session, href, headers=HEADERS, max_retries=max_retries, backoff_base=backoff_base)
+        time.sleep(delay)
+        # Save to cache
+        save_cache(href, data)
+        return data
+    
+    except requests.RequestException as e:
+        failed[href] = str(e)
+        return {}
+    
+def retry_failed(failed, session, args):
+    """Retry failed URLs stored in dict form."""
+    still_failed = {}
+    for href in tqdm(list(failed.keys()), desc="Retrying failed requests"):
+        data = fetch_json(
+            href,
+            session,
+            delay=args.delay,
+            max_retries=args.max_retries,
+            backoff_base=args.backoff_base,
+            failed=still_failed
+        )
+        # if still failing, it stays in still_failed
+        if data:
+            print(f"Recovered: {href}")
+    return still_failed
+
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Collect CE projects from the UKRI GtR API.")
-    parser.add_argument("--delay", type=float, default=0.3,
+    parser.add_argument("--delay", type=float, default=1,
                         help="Seconds between API calls (default 0.3; raise to be gentler)")
     parser.add_argument("--test-limit", type=int, default=None, help="Only process first N rows (for testing)")
     parser.add_argument("--out-dir", type=str, default=None)
@@ -60,10 +151,6 @@ def main():
     parser.add_argument("--backoff-base", type=float, default=2.0,
                         help="Base seconds for exponential backoff between retries (default 2)")
     args = parser.parse_args()
-
-    global MAX_RETRIES, BACKOFF_BASE
-    MAX_RETRIES = max(1, args.max_retries)
-    BACKOFF_BASE = max(0.0, args.backoff_base)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = requests.Session()
@@ -74,6 +161,7 @@ def main():
         df = df.head(args.test_limit)
 
     all_outcomes = []
+    failed = {}
     raw_by_type = defaultdict(list)
 
     for row in tqdm(df.itertuples(index=False), total=len(df), desc="Fetching outcomes"):
@@ -81,7 +169,9 @@ def main():
         if not outcome_type:
             continue
 
-        data = gtr.fetch_json(row.outcome_href, session, delay = args.delay)
+        data = fetch_json(row.outcome_href, session, delay=args.delay, 
+                          max_retries=args.max_retries, 
+                          backoff_base=args.backoff_base, failed=failed)
         if not data:
             continue
 
@@ -96,28 +186,34 @@ def main():
 
         raw_by_type[outcome_type].append(outcome)
         all_outcomes.append(outcome)
+        if len(all_outcomes) % 100 == 0:
+            conn.commit()
 
-        for outcome_type, rows in raw_by_type.items():
-            df_out = pd.json_normalize(rows, sep=".")
-            df_out.to_csv(
-                OUTCOME_DIR / f"gtr_{outcome_type}_{timestamp}.csv",
-                index=False, encoding="utf-8"
-            )
+    for outcome_type, rows in raw_by_type.items():
+        df_out = pd.json_normalize(rows, sep=".")
+        df_out.to_csv(
+            OUTCOME_DIR / f"gtr_{outcome_type}_{timestamp}.csv",
+            index=False, encoding="utf-8"
+        )
 
-            df_out.to_csv(
-                OUTCOME_DIR / f"gtr_{outcome_type}_latest.csv",
-                index=False, encoding="utf-8"
-            )
+        df_out.to_csv(
+            OUTCOME_DIR / f"gtr_{outcome_type}_latest.csv",
+            index=False, encoding="utf-8"
+        )
 
     full_df_out = pd.json_normalize(all_outcomes, sep=".")
     full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_{timestamp}.csv", 
                        index=False, encoding="utf-8")
     full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_latest.csv",
                        index=False, encoding="utf-8")
+    
+    if failed:
+        print(f"\nRetrying {len(failed)} failed requests...")
+        failed = retry_failed(failed, session, args)
+        print(f"Still failed after retry: {len(failed)}")
 
-
-    gtr.flush_cache()
-    gtr.conn.close()
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
