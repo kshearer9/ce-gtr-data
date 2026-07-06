@@ -389,18 +389,21 @@ MAX_RETRIES = 5          # attempts per request before giving up
 BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
 
 
-def _request_with_retries(session, url, params=None):
+def _request_with_retries(session, url, params=None, headers=None, max_retries=5, backoff_base=2, retryable_status=None):
     """GET a URL with retry-and-backoff on timeouts and transient server errors.
 
     Returns the parsed JSON on success. Raises the last exception if every
     attempt fails, so the caller can decide whether to skip or abort.
     """
     last_exc = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    retryable_status = {500, 502, 503, 504, 429}
+    if headers is None:
+        headers = {}
+    for attempt in range(1, max_retries + 1):
         try:
-            resp = session.get(url, headers=HEADERS, params=params, timeout=60)
+            resp = session.get(url, headers=headers, params=params, timeout=60)
             # Retry on transient server statuses; raise on other 4xx/5xx.
-            if resp.status_code in RETRYABLE_STATUS:
+            if resp.status_code in retryable_status:
                 raise requests.HTTPError(
                     f"{resp.status_code} (retryable) for {resp.url}", response=resp)
             resp.raise_for_status()
@@ -410,10 +413,10 @@ def _request_with_retries(session, url, params=None):
             status = getattr(getattr(exc, "response", None), "status_code", None)
             retryable = (
                 isinstance(exc, (requests.Timeout, requests.ConnectionError))
-                or status in RETRYABLE_STATUS
+                or status in retryable_status
             )
             last_exc = exc
-            if not retryable or attempt == MAX_RETRIES:
+            if not retryable or attempt == max_retries:
                 raise
             # Testing
             if status == 429:
@@ -421,10 +424,10 @@ def _request_with_retries(session, url, params=None):
                 if retry_after:
                     wait = float(retry_after)
                 else:
-                    wait = BACKOFF_BASE * (2 ** (attempt - 1))
+                    wait = backoff_base * (2 ** (attempt - 1))
             else:
-                wait = BACKOFF_BASE * (2 ** (attempt - 1))
-            print(f"\n    (attempt {attempt}/{MAX_RETRIES} failed: {exc}; "
+                wait = backoff_base * (2 ** (attempt - 1))
+            print(f"\n    (attempt {attempt}/{max_retries} failed: {exc}; "
                   f"retrying in {wait:.0f}s)", flush=True)
             time.sleep(wait)
     # Should not reach here, but re-raise defensively.
@@ -434,7 +437,7 @@ def _request_with_retries(session, url, params=None):
 def fetch_page(term, page, size, session, delay):
     """Fetch a single page of GtR project search results for a keyword term."""
     params = {"q": term, "p": page, "s": size}
-    data = _request_with_retries(session, BASE_URL, params=params)
+    data = _request_with_retries(session, BASE_URL, params=params, headers=HEADERS)
     time.sleep(delay)
     return data
 
@@ -452,7 +455,7 @@ def fetch_json(href, session, delay):
         return cached
 
     try:
-        data = _request_with_retries(session, href)
+        data = _request_with_retries(session, href, headers=HEADERS)
         time.sleep(delay)
         # Save to cache
         save_cache(href, data)
