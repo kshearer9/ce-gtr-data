@@ -1,5 +1,5 @@
 """
-Matches UKRI project titles to OpenAlex awards, retrieves funded outputs,
+Matches UKRI project titles to OpenAlex awards, retrieves funded outcomes,
 and enriches them with full OpenAlex work metadata.
 
 Pipeline:
@@ -9,11 +9,11 @@ Pipeline:
 - Extract funded OpenAlex works from matched awards
 - Batch fetch full work metadata
 - Cache results to avoid repeat API calls
-- Export enriched outputs + optional skipped-project log
+- Export enriched outcomes + optional skipped-project log
 
 Exported Outputs:
-- openalex_outputs.csv - all works associated with UKRI CE projects and metadata
-- Optional: openalex_missing_outputs.csv - logs projects that have no matches and the reason
+- openalex_outcomes.csv - all works associated with UKRI CE projects and metadata
+- Optional: openalex_missing_outcomes.csv - logs projects that have no matches and the reason
 
 Note:
 - The script currently saves the same project multiple times if it appears under
@@ -35,11 +35,15 @@ from datetime import datetime
 # DIRECTORY CONFIG
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-OPENALEX_DIR = SCRIPT_DIR.parent    
-ROOT_DIR = OPENALEX_DIR.parent   
-DATA_DIR = OPENALEX_DIR / "data"
-GTR_DATA_DIR = ROOT_DIR / "gtr" / "data" / "cleaned"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
+INPUT_DIR = ROOT_DIR / "gtr" / "data" / "cleaned"
+
+DATA_DIR = ROOT_DIR / "openalex" / "data"
+CACHE_DIR = DATA_DIR / "openalex" / "cache"
+    
+for d in (DATA_DIR, CACHE_DIR):
+    d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # API CONFIG
@@ -62,7 +66,7 @@ SKIPPED_LOOKUP = {}
 # ---------------------------------------------------------------------------
 
 # Cache to disk to avoid repeated API calls
-CACHE_DB = DATA_DIR / "openalex_cache.db"
+CACHE_DB = CACHE_DIR / "openalex_cache.db"
 CACHE_DB.parent.mkdir(parents=True, exist_ok=True)
 conn = sqlite3.connect(str(CACHE_DB))
 cursor = conn.cursor()
@@ -327,8 +331,8 @@ def extract_work_metadata(w):
     abstract = reconstruct_abstract(w.get("abstract_inverted_index"))
 
     return {
-        "output_title": w.get("title"),
-        "output_type": w.get("type"),
+        "outcome_title": w.get("title"),
+        "outcome_type": w.get("type"),
         "publication_date": w.get("publication_date"),
         "authors": authors,
         "institutions": institutions,
@@ -353,7 +357,7 @@ def main():
     parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
-    df = pd.read_csv(GTR_DATA_DIR / "gtr_ce_projects_clean.csv", encoding = "utf-8")
+    df = pd.read_csv(INPUT_DIR / "gtr_ce_projects_clean.csv", encoding = "utf-8")
 
     if args.test_limit:
         df = df.head(args.test_limit)
@@ -361,7 +365,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = requests.Session()
 
-    # Iterate through projects and resolve OpenAlex awards + outputs
+    # Iterate through projects and resolve OpenAlex awards + works
     results = []
     award_results = []
     skipped_projects = []
@@ -422,7 +426,7 @@ def main():
         # Collect all unique work IDs for batch retrieval
         work_ids = [
             url.split("/")[-1]
-            for url in award.get("funded_outputs", [])
+            for url in award.get("funded_outcomes", [])
         ]
 
         award_lookup[row.project_id] = {
@@ -449,7 +453,7 @@ def main():
                 print(f"Batch failed, retrying: {e}")
                 time.sleep(2)
 
-    # Build output using cache
+    # Build outcome using cache
     for item in award_lookup.values():
         row = item["row"]
         grant_reference = item["grant_reference"]
@@ -477,19 +481,19 @@ def main():
                 "project_id": row.project_id,
                 "project_title": row.title,
                 "grant_reference": grant_reference,
-                "reason": "no outputs",
+                "reason": "no outcomes",
             })
 
-    # Save outputs
+    # Save outcomes
     out = pd.DataFrame(results)
-    out.to_csv(DATA_DIR / f"openalex_outputs_{timestamp}.csv", index=False, encoding="utf-8")
-    out.to_csv(DATA_DIR / "openalex_outputs_latest.csv", index=False, encoding="utf-8")
+    out.to_csv(DATA_DIR / f"openalex_outcomes_{timestamp}.csv", index=False, encoding="utf-8")
+    out.to_csv(DATA_DIR / "openalex_outcomes_latest.csv", index=False, encoding="utf-8")
 
     projects_df = pd.json_normalize(award_results)
     projects_df.to_csv(DATA_DIR / f"openalex_projects_{timestamp}.csv", index=False, encoding="utf-8")
     projects_df.to_csv(DATA_DIR / "openalex_projects_latest.csv", index=False, encoding="utf-8")
 
-    print(f"\nSaved {len(out)} funded outputs.")
+    print(f"\nSaved {len(out)} funded outcomes.")
     print(f"Saved {len(projects_df)} projects.")
     
     # Optionally export skipped projects for evaluation
@@ -497,7 +501,7 @@ def main():
         skipped_df = pd.DataFrame(skipped_projects)
         skipped_df.to_csv(DATA_DIR / f"openalex_skipped_projects_{timestamp}.csv", index=False, encoding="utf-8")
         skipped_df.to_csv(DATA_DIR / "openalex_skipped_projects_latest.csv", index=False, encoding="utf-8")
-        print(f"Saved {len(skipped_df)} GtR projects that did not appear in OpenAlex or had no outputs.")
+        print(f"Saved {len(skipped_df)} GtR projects that did not appear in OpenAlex or had no outcomes.")
 
     conn.close()
 
