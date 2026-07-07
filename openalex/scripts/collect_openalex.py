@@ -1,19 +1,22 @@
 """
-Matches UKRI project titles to OpenAlex awards, retrieves funded outcomes,
-and enriches them with full OpenAlex work metadata.
+Matches UKRI Gateway to Research (GtR) projects to OpenAlex awards using
+project titles and grant references, then retrieves both award metadata
+and funded research outputs.
 
 Pipeline:
-- Load UKRI GtR project dataset
-- Query OpenAlex Awards API using cleaned project titles
+- Load cleaned UKRI GtR project dataset
+- Search the OpenAlex Awards API using cleaned project titles
 - Match awards to UKRI grant references
-- Extract funded OpenAlex works from matched awards
+- Extract and save OpenAlex award (project) metadata
+- Collect funded OpenAlex work IDs from matched awards
 - Batch fetch full work metadata
-- Cache results to avoid repeat API calls
-- Export enriched outcomes + optional skipped-project log
+- Cache award searches and work metadata in SQLite to avoid repeated API calls
+- Export project metadata, funded outcomes, and (optionally) skipped projects
 
 Exported Outputs:
-- openalex_outcomes.csv - all works associated with UKRI CE projects and metadata
-- Optional: openalex_missing_outcomes.csv - logs projects that have no matches and the reason
+- openalex_projects_latest.csv - OpenAlex award metadata for matched UKRI projects
+- openalex_outcomes_latest.csv - metadata for funded OpenAlex works linked to matched projects
+- Optional: openalex_skipped_projects_latest.csv - projects with no match or no retrieved outcomes
 
 Note:
 - The script currently saves the same project multiple times if it appears under
@@ -297,6 +300,25 @@ def fetch_works_batch(work_ids, session):
 # TRANSFORM / PARSING
 # ---------------------------------------------------------------------------
 
+def extract_award_metadata(a):
+    """
+    Extracts metadata fields from OpenAlex awards.
+    """
+    return {
+        "openalex_url": a.get("id", ""),
+        "description": a.get("description", ""),
+        "funding_amount": a.get("amount", ""),
+        "currency": a.get("currency", ""),
+        "funding_type": a.get("funding_type", ""),
+        "start_date": a.get("start_date", ""),
+        "end_date": a.get("end_date", ""),
+        "ukri_url": a.get("landing_page_url", ""),
+        "primary_topic": (a.get("primary_topic") or {}).get("display_name", ""),
+        "primary_topic_score": (a.get("primary_topic") or {}).get("score", ""),
+        "subfield": (a.get("primary_topic") or {}).get("subfield", {}).get("display_name", ""),
+        "field": (a.get("primary_topic") or {}).get("field", {}).get("display_name", ""),
+        "domain": (a.get("primary_topic") or {}).get("domain", {}).get("display_name", "")
+    }
 
 def reconstruct_abstract(inverted_index):
     """
@@ -418,10 +440,10 @@ def main():
         award_row = {
             "project_id": row.project_id,
             "project_title": row.title,
-            "grant_reference": grant_reference
+            "grant_reference": grant_reference,
+            **extract_award_metadata(award)
         }
 
-        award_row.update(award)
         award_results.append(award_row)
         
         # Collect all unique work IDs for batch retrieval
