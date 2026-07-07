@@ -40,7 +40,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 INPUT_DIR = ROOT_DIR / "gtr" / "data" / "cleaned"
 
 DATA_DIR = ROOT_DIR / "openalex" / "data"
-CACHE_DIR = DATA_DIR / "openalex" / "cache"
+CACHE_DIR = ROOT_DIR / "openalex" / "cache"
     
 for d in (DATA_DIR, CACHE_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,8 @@ for d in (DATA_DIR, CACHE_DIR):
 
 API_KEY = "k4XSonjxeAF7OthnZ8qfzV"
 HEADERS = {
-    "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)"
+    "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
+    "Accept": "application/json"
 }
 
 # ---------------------------------------------------------------------------
@@ -426,7 +427,7 @@ def main():
         # Collect all unique work IDs for batch retrieval
         work_ids = [
             url.split("/")[-1]
-            for url in award.get("funded_outcomes", [])
+            for url in award.get("funded_outputs", [])
         ]
 
         award_lookup[row.project_id] = {
@@ -503,6 +504,7 @@ def main():
         skipped_df.to_csv(DATA_DIR / "openalex_skipped_projects_latest.csv", index=False, encoding="utf-8")
         print(f"Saved {len(skipped_df)} GtR projects that did not appear in OpenAlex or had no outcomes.")
 
+    conn.commit()
     conn.close()
 
 if __name__ == "__main__":

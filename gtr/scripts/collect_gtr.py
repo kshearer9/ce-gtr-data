@@ -71,7 +71,8 @@ DATA_DIR = GTR_DIR / "data"
 
 RAW_DIR = DATA_DIR / "raw"
 PROC_DIR = DATA_DIR / "processed"
-CACHE_DIR = DATA_DIR / "cache"
+
+CACHE_DIR = GTR_DIR / "cache"
 CKPT_DIR = DATA_DIR / "checkpoints"
 
 for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
@@ -99,7 +100,7 @@ HEADERS = {
 # CACHE
 # ---------------------------------------------------------------------------
 
-CACHE_DB = CACHE_DIR / "gtr_cache.db"
+CACHE_DB = CACHE_DIR / "gtr_project_cache.db"
 conn = sqlite3.connect(CACHE_DB)
 cursor = conn.cursor()
 
