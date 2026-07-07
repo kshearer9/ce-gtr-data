@@ -100,7 +100,7 @@ HEADERS = {
 # CACHE
 # ---------------------------------------------------------------------------
 
-CACHE_DB = CACHE_DIR / "gtr_cache.db"
+CACHE_DB = CACHE_DIR / "gtr_project_cache.db"
 conn = sqlite3.connect(CACHE_DB)
 cursor = conn.cursor()
 
