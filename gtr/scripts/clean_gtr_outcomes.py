@@ -121,6 +121,7 @@ def clean_df(df):
     # Convert empty strings to NaN
     df = df.replace(r'^\s*$', np.nan, regex=True)
     # Remove empty columns
+    df = df.replace("[]", np.nan)
     df = df.dropna(axis=1, how="all")
     return df
 
@@ -167,6 +168,25 @@ def convert_to_date(df, columns):
     for col in columns:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
+    return df
+
+def convert_to_bool(df, cols):
+    """
+    Convert columns to boolean type.
+    Handles existing booleans and common text/numeric representations.
+    """
+    true_values = {"true", "t", "yes", "y", "1", "1.0"}
+    false_values = {"false", "f", "no", "n", "0", "0.0"}
+    for col in cols:
+        if col in df.columns:
+            # Already boolean - leave as is
+            if df[col].dtype == "bool":
+                continue
+            # Convert strings to lowercase for matching
+            values = df[col].astype("string").str.strip().str.lower()
+            df[col] = values.map(lambda x: True if x in true_values
+                                 else False if x in false_values 
+                                 else pd.NA).astype("boolean")
     return df
 
 def clean_text_columns(df, *extra_cols):
@@ -218,6 +238,7 @@ def disseminations(df, outcome_type):
     df = convert_to_string(df, "results", "dissemination_years")
     df = convert_to_category(df, ["form", "primary_audience", "presentation_type", 
                               "geographic_reach"])
+    df = convert_to_bool(df, ["part_of_official_scheme"])
     df = clean_text_columns(df)
     return df
 
@@ -236,6 +257,46 @@ def furtherfundings(df, outcome_type):
     df = clean_text_columns(df)
     return df
 
+def intellectualproperties(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"patentId": "patent_id",
+                             "yearProtectionGranted": "year_granted",
+                             "patentUrl": "patent_url"})
+    df = convert_to_string(df, "patent_id", "patent_url")
+    df = convert_to_numeric(df, ["year_granted"])
+    df = convert_to_date(df, ["start", "end"])
+    df = convert_to_category(df, ["protection", "type"])
+    df = convert_to_bool(df, ["licensed"])
+    df = clean_text_columns(df)
+    return df
+
+def policyinfluences(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"guidelineTitle": "guideline_title",
+                             "geographicReach": "geographic_reach",
+                             "patentUrl": "patent_url"})
+    df = convert_to_string(df)
+    df = convert_to_category(df, ["type", "geographic_reach"])
+    df = convert_to_bool(df, ["licensed"])
+    if "area.item" in df.columns:
+        df["policy_areas"] = df["area.item"].apply(
+            lambda x: "; ".join(x) if isinstance(x, list) else x)
+    df = clean_text_columns(df, "influence", "guideline_title", "methods")
+    return df
+
+def products(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"clinicalTrial": "clinical_trial",
+                             "ukcrnIsctnId": "clinical_trial_id",
+                             "yearDevelopmentCompleted": "year_completed"})
+    df = convert_to_string(df, "clinical_trial", "clinical_trial_id")
+    df = convert_to_numeric(df, ["year_completed"])
+    df = convert_to_category(df, ["type", "stage", "status"])
+    df = clean_text_columns(df)
+    return df
 
 
 
