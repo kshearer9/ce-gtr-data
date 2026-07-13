@@ -219,7 +219,21 @@ def disseminations(df, outcome_type):
     df = convert_to_category(df, ["form", "primary_audience", "presentation_type", 
                               "geographic_reach"])
     df = clean_text_columns(df)
-    print(df.info())
+    return df
+
+def furtherfundings(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"fundingId": "further_funding_id",
+                             "amount.currencyCode": "currency_code",
+                             "amount.amount": "amount"})
+    df = convert_to_string(df, "narrative", "organisation", "department", 
+                           "further_funding_id")
+    df = convert_to_numeric(df, ["amount"])
+    df = convert_to_date(df, ["start", "end"])
+    df = convert_to_category(df, ["organisation", "department", "sector", 
+                                  "country", "currency_code"])
+    df = clean_text_columns(df)
     return df
 
 
