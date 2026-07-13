@@ -1,19 +1,21 @@
 """
-Matches UKRI project titles to OpenAlex awards, retrieves funded outcomes,
-and enriches them with full OpenAlex work metadata.
+Matches UKRI Gateway to Research (GtR) projects to OpenAlex awards using
+project titles and grant references, then retrieves both award metadata
+and funded research outputs.
 
 Pipeline:
-- Load UKRI GtR project dataset
-- Query OpenAlex Awards API using cleaned project titles
+- Load cleaned UKRI GtR project dataset
+- Search the OpenAlex Awards API using cleaned project titles
 - Match awards to UKRI grant references
-- Extract funded OpenAlex works from matched awards
+- Extract and save OpenAlex award (project) metadata
+- Collect funded OpenAlex work IDs from matched awards
 - Batch fetch full work metadata
-- Cache results to avoid repeat API calls
-- Export enriched outcomes + optional skipped-project log
+- Cache award searches and work metadata in SQLite to avoid repeated API calls
+- Export project metadata, funded outcomes, and (optionally) skipped projects
 
 Exported Outputs:
-- openalex_outcomes.csv - all works associated with UKRI CE projects and metadata
-- Optional: openalex_missing_outcomes.csv - logs projects that have no matches and the reason
+- openalex_projects_latest.csv - OpenAlex award metadata for matched UKRI projects
+- openalex_outcomes_latest.csv - metadata for funded OpenAlex works linked to matched projects
 
 Note:
 - The script currently saves the same project multiple times if it appears under
@@ -54,13 +56,6 @@ HEADERS = {
     "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
     "Accept": "application/json"
 }
-
-# ---------------------------------------------------------------------------
-# GLOBAL VARIABLES
-# ---------------------------------------------------------------------------
-
-API_DOWN = False
-SKIPPED_LOOKUP = {}
 
 # ---------------------------------------------------------------------------
 # CACHE SETUP
@@ -172,67 +167,79 @@ def fallback_search_title(title):
 # ---------------------------------------------------------------------------
 
 def safe_get(url, params=None, headers=None, timeout=15, retries=5, 
-             backoff=0.8, session = None, project_title=None):
+             backoff=0.8, session=None, failed=None, key=None):
     """
-    Wrapper around requests.get with:
-    - retry + exponential backoff
-    - basic HTTP error handling
-    - optional tracking of skipped queries
+    OpenAlex request wrapper.
+    Handles:
+    - retries for transient failures
+    - exponential backoff
+    - rate limiting
+    - permanent client errors
+    Failed requests are stored in `failed`
+    so they can be retried later.
     """
-    global API_DOWN
-    last_exception = None
-
+    if session is None:
+        session = requests.Session()
+    if failed is None:
+        failed = {}
     for attempt in range(1, retries + 1):
         try:
-            r = session.get(url, params=params, headers=headers, timeout=timeout)
-            # Rate limit handling (429)
-            if r.status_code == 429:
+            r = session.get(url, params=params, headers=headers,timeout=timeout)
+            status = r.status_code
+
+            # Rate limit
+            if status == 429:
                 retry_after = r.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else backoff * (2 ** (attempt - 1))
-                print(f"[HTTP 429] Rate limited. Waiting {wait:.1f}s (attempt {attempt}/{retries})")
+                wait = (
+                    float(retry_after)
+                    if retry_after
+                    else backoff * (2 ** (attempt - 1))
+                )
+                print(f"[429] Rate limited. " 
+                      f"Waiting {wait:.1f}s")
                 time.sleep(wait)
                 continue
-            r.raise_for_status()
-            time.sleep(0.2)
-            return r
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code
 
-            # Non-retryable client errors
-            if 400 <= status < 500 and status != 429:
-                if project_title:
-                    SKIPPED_LOOKUP[project_title] = {
-                        "status": status,
-                        "search": params.get("search") if params else "",
-                    }
+            # Temporary server errors
+            if status >= 500:
+                wait = backoff * (2 ** (attempt - 1))
+                print(f"[{status}] Server error. "
+                      f"Retrying in {wait:.1f}s")
+                time.sleep(wait)
+                continue
 
-                print(f"[HTTP {status}] Skipping project:")
-                print(f"    Title: {project_title}")
-                print(f"    Search: {params.get('search') if params else ''}")
+            # Permanent client errors
+            if 400 <= status < 500:
                 return None
+            r.raise_for_status()
+            return r
 
-            last_exception = e
-
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-                requests.exceptions.RequestException) as e:
-
-            last_exception = e
-
-        # Retry logging
-        print(f"[Attempt {attempt}/{retries}] Error fetching {url}: {last_exception}")
-        if attempt < retries:
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
             wait = backoff * (2 ** (attempt - 1))
+            print(f"[Connection issue] "
+                f"Retry {attempt}/{retries}")
             time.sleep(wait)
 
-    # Final failure
-    print(f"[Failed after {retries} retries] {url}: {last_exception}")
-    if isinstance(last_exception, requests.exceptions.ConnectionError):
-        API_DOWN = True
+        except requests.RequestException as e:
+            wait = backoff * (2 ** (attempt - 1))
+            print(f"[Request error] "
+                f"Retry {attempt}/{retries}")
+            time.sleep(wait)
+
+    # Failed after all retries
+    if key:
+        failed[key] = {
+            "url": url,
+            "params": params,
+            "headers": headers,
+            "type": "awards" if "awards" in url else "works",
+            "error": f"Failed after {retries} retries"
+        }
     return None
 
 
-def find_award(raw_title, session):
+def find_award(raw_title, session, failed):    
     """
     Search the OpenAlex Awards API using a cleaned UKRI project title.
     Results are cached using the cleaned title so repeated searches
@@ -244,7 +251,8 @@ def find_award(raw_title, session):
         return cached
     url = "https://api.openalex.org/awards"
     params = {"search": search_title, "per-page": 50, "api_key": API_KEY}
-    r = safe_get(url, params=params, headers=HEADERS, session = session, project_title=raw_title)
+    r = safe_get(url, params=params, headers=HEADERS, session=session, 
+                 failed=failed, key=raw_title)
     if r is None:
         return []
     results = r.json().get("results", [])
@@ -253,50 +261,124 @@ def find_award(raw_title, session):
         fallback = fallback_search_title(raw_title)
         if fallback != search_title:
             params["search"] = fallback
-            r = safe_get(url, params=params, headers=HEADERS, 
-                         session = session, project_title=raw_title)
+            r = safe_get(url, params=params, headers=HEADERS, session=session,
+                         failed=failed, key=raw_title)
             if r is not None:
                 results = r.json().get("results", [])
-    save_award(search_title, results)
+    if results:
+        save_award(search_title, results)
     if fallback and fallback != search_title:
-        save_award(fallback, results)
+        if results:
+            save_award(fallback, results)
     return results
 
 
-def fetch_works_batch(work_ids, session):
+def fetch_works_batch(work_ids, session, failed):
     """
-    Batch fetch OpenAlex works. Updates work_cache and returns nothing.
+    Fetch a batch of OpenAlex works.
+    Returns:
+        missing work IDs
     """
     if not work_ids:
-        return
+        return []
+    
     placeholders = ",".join("?" * len(work_ids))
     cursor.execute(
-        f"SELECT work_id FROM work_cache WHERE work_id IN ({placeholders})",
+        f"""
+        SELECT work_id
+        FROM work_cache
+        WHERE work_id IN ({placeholders})
+        """,
         work_ids,
     )
+
     cached = {row[0] for row in cursor.fetchall()}
     uncached = [wid for wid in work_ids if wid not in cached]
     if not uncached:
-        return
+        return []
 
     url = "https://api.openalex.org/works"
-    # OpenAlex supports OR-style filtering via |
-    params = {"filter": f"openalex:{'|'.join(uncached)}", "per-page": len(uncached), "api_key": API_KEY}
-
-    r = safe_get(url, params=params, headers=HEADERS, session = session)
+    params = {"filter": f"openalex:{'|'.join(uncached)}",
+              "per-page": len(uncached), "api_key": API_KEY}
+    r = safe_get(url, params=params, headers=HEADERS, session=session,
+                 failed=failed, key=",".join(uncached))
     if r is None:
-        print(f"[Batch fetch failed] {len(uncached)} works")
-        return
+        failed["works_" + ",".join(uncached)] = {
+            "url": url,
+            "params": params,
+            "type": "works",
+            "work_ids": uncached
+        }
+        return uncached
+
     data = r.json()
+    returned_ids = []
     for work in data.get("results", []):
         work_id = work["id"].split("/")[-1]
         save_work(work_id, work)
-    conn.commit()
+        returned_ids.append(work_id)
+
+    missing = [wid for wid in uncached if wid not in returned_ids]
+    if missing:
+        failed["works_" + ",".join(missing)] = {
+            "url": url,
+            "params": {
+                "filter": f"openalex:{'|'.join(missing)}",
+                "per-page": len(missing),
+                "api_key": API_KEY
+            },
+            "type": "works",
+            "work_ids": missing
+        }
+    return missing
+
+def retry_failed_requests(failed, session, max_attempts=3):
+    remaining = failed.copy()
+    for attempt in range(1, max_attempts + 1):
+        if not remaining:
+            break
+        print(f"\nRetry round {attempt}/{max_attempts}: "
+              f"{len(remaining)} requests")
+        still_failed = {}
+        for key, request in tqdm(remaining.items(), desc="Retrying failed requests"):
+            r = safe_get(request["url"], params=request["params"],
+                         headers=request["headers"], session=session,
+                         failed=still_failed, key=key)
+            if r is not None:
+                if request["type"] == "awards":
+                    results = r.json().get("results", [])
+                    save_award(key, results)
+
+                elif request["type"] == "works":
+                    for work in r.json().get("results", []):
+                        work_id = work["id"].split("/")[-1]
+                        save_work(work_id, work)
+        remaining = still_failed
+    return remaining
 
 # ---------------------------------------------------------------------------
 # TRANSFORM / PARSING
 # ---------------------------------------------------------------------------
 
+def extract_award_metadata(a):
+    """
+    Extracts metadata fields from OpenAlex awards.
+    """
+    return {
+        "openalex_url": a.get("id", ""),
+        "description": a.get("description", ""),
+        "funding_amount": a.get("amount", ""),
+        "currency": a.get("currency", ""),
+        "funding_type": a.get("funding_type", ""),
+        "start_date": a.get("start_date", ""),
+        "end_date": a.get("end_date", ""),
+        "ukri_url": a.get("landing_page_url", ""),
+        "primary_topic": (a.get("primary_topic") or {}).get("display_name", ""),
+        "primary_topic_score": (a.get("primary_topic") or {}).get("score", ""),
+        "subfield": (a.get("primary_topic") or {}).get("subfield", {}).get("display_name", ""),
+        "field": (a.get("primary_topic") or {}).get("field", {}).get("display_name", ""),
+        "domain": (a.get("primary_topic") or {}).get("domain", {}).get("display_name", "")
+    }
 
 def reconstruct_abstract(inverted_index):
     """
@@ -355,7 +437,6 @@ def extract_work_metadata(w):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test-limit", type=int, default=None, help = "Limit number of rows processed (for testing)")
-    parser.add_argument("--save-skipped", action="store_true", help="Save skipped projects to CSV (for evaluation)")
     args = parser.parse_args()
 
     df = pd.read_csv(INPUT_DIR / "gtr_ce_projects_clean.csv", encoding = "utf-8")
@@ -369,13 +450,10 @@ def main():
     # Iterate through projects and resolve OpenAlex awards + works
     results = []
     award_results = []
-    skipped_projects = []
     all_work_ids = set()
     award_lookup = {}
+    failed = {}
     for row in tqdm(df.itertuples(index=False), total=len(df)):
-        if API_DOWN:
-            print("Stopping run: OpenAlex API is unreachable")
-            break
         
         # Skip invalid or missing titles
         project_title = row.title
@@ -390,38 +468,29 @@ def main():
         grant_reference = str(grant_reference).strip()
 
         # Match OpenAlex award to UKRI grant reference
-        awards = find_award(project_title, session)
+        awards = find_award(
+            project_title,
+            session,
+            failed
+        )
         award = None
         for candidate in awards:
             award_ref = str(candidate.get("funder_award_id", "")).strip()
             if award_ref == grant_reference:
                 award = candidate
                 break
-        if award is None:
-            # Track unmatched projects for evaluation/debugging
-            if project_title in SKIPPED_LOOKUP:
-                reason = "search error"
-            elif len(awards) == 0:
-                reason = "no title match"
-            else:
-                reason = "no title and grant reference match"
 
-            skipped_projects.append({
-                "project_id": row.project_id,
-                "project_title": project_title,
-                "grant_reference": grant_reference,
-                "reason": reason,
-            })
+        if award is None:
             continue
 
         # Save all award metadata
         award_row = {
             "project_id": row.project_id,
             "project_title": row.title,
-            "grant_reference": grant_reference
+            "grant_reference": grant_reference,
+            **extract_award_metadata(award)
         }
 
-        award_row.update(award)
         award_results.append(award_row)
         
         # Collect all unique work IDs for batch retrieval
@@ -439,21 +508,26 @@ def main():
 
         all_work_ids.update(work_ids)
 
-    
     # Batch fetch all works
     print(f"\nFetching {len(all_work_ids)} unique works in batches...")
     BATCH_SIZE = 50
     work_ids_list = list(all_work_ids)
     for i in tqdm(range(0, len(work_ids_list), BATCH_SIZE)):
         batch = work_ids_list[i:i + BATCH_SIZE]
-        for _ in range(3):
-            try:
-                fetch_works_batch(batch, session)
-                break
-            except Exception as e:
-                print(f"Batch failed, retrying: {e}")
-                time.sleep(2)
-
+        try:
+            fetch_works_batch(
+                batch,
+                session,
+                failed
+            )
+        except Exception as e:
+            print(f"Batch exception: {e}")
+    
+    if failed:
+        print(f"\nRetrying {len(failed)} failed requests...")
+        failed = retry_failed_requests(failed, session)
+        print(f"Still failed: {len(failed)}")
+    
     # Build outcome using cache
     for item in award_lookup.values():
         row = item["row"]
@@ -463,12 +537,10 @@ def main():
         if not item["work_ids"]:
             continue
 
-        retrieved = 0
         for work_id in item["work_ids"]:
             w = get_work(work_id)
             if w is None:
                 continue
-            retrieved += 1
             metadata = extract_work_metadata(w)
             results.append({
                 "project_id": row.project_id,
@@ -476,13 +548,6 @@ def main():
                 "grant_reference": grant_reference,
                 "project_openalex_url": award["id"],
                 **metadata
-            })
-        if retrieved == 0:
-            skipped_projects.append({
-                "project_id": row.project_id,
-                "project_title": row.title,
-                "grant_reference": grant_reference,
-                "reason": "no outcomes",
             })
 
     # Save outcomes
@@ -497,13 +562,6 @@ def main():
     print(f"\nSaved {len(out)} funded outcomes.")
     print(f"Saved {len(projects_df)} projects.")
     
-    # Optionally export skipped projects for evaluation
-    if args.save_skipped:
-        skipped_df = pd.DataFrame(skipped_projects)
-        skipped_df.to_csv(DATA_DIR / f"openalex_skipped_projects_{timestamp}.csv", index=False, encoding="utf-8")
-        skipped_df.to_csv(DATA_DIR / "openalex_skipped_projects_latest.csv", index=False, encoding="utf-8")
-        print(f"Saved {len(skipped_df)} GtR projects that did not appear in OpenAlex or had no outcomes.")
-
     conn.commit()
     conn.close()
 

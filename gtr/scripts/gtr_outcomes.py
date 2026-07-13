@@ -180,7 +180,7 @@ def main():
             "grant_reference": row.grant_reference,
             "project_title": row.title,
             "href": row.outcome_href,
-            "outcome_type": outcome_type,
+            "gtr_outcome_type": outcome_type,
             **data
         }
 
