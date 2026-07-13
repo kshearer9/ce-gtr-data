@@ -395,9 +395,38 @@ def researchmaterials(df, outcome_type):
     df = convert_to_numeric(df, ["year"])
     df = convert_to_category(df, ["type"])
     df = convert_to_bool(df, ["provided_to_others", "software_developed",
-                              "software_open_source"])
+                              "software_open_sourced"])
     df = clean_text_columns(df)
     df = convert_to_string(df)
+    return df
+
+def softwareandtechnicalproducts(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"softwareOpenSourced": "software_open_sourced",
+                             "openSourceLicense": "open_source_license",
+                             "yearFirstProvided": "year"})
+    df = convert_to_numeric(df, ["year"])
+    df = convert_to_category(df, ["type"])
+    df = convert_to_bool(df, ["software_open_sourced"])
+    df = clean_text_columns(df)
+    df = convert_to_string(df, "open_source_license")    
+    return df
+
+def spinouts(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"companyName": "company_name",
+                             "companyDescription": "company_description",
+                             "website": "url",
+                             "registrationNumber": "reg_num",
+                             "yearEstablished": "year",
+                             "ipExploited": "ip_exploited",
+                             "jointVenture": "joint_venture"})
+    df = convert_to_numeric(df, ["year"])
+    df = convert_to_bool(df, ["ip_exploited", "joint_venture"])
+    df = clean_text_columns(df, "company_description")
+    df = convert_to_string(df, "company_name", "reg_num")
     return df
 
 
@@ -418,14 +447,14 @@ def main():
             continue
         cleaning_function = globals().get(outcome_type)
         if not callable(cleaning_function):
-            print(f"No cleaning function found for '{outcome_type}'")
+            print(f"No cleaning function found for '{outcome_type}'\n")
             continue
         print(f"Cleaning: '{outcome_type}'")
         df = pd.read_csv(file, encoding ="utf-8")
         df = cleaning_function(df, outcome_type)
         output_file = OUTPUT_DIR / f"gtr_{outcome_type}_clean.csv"
         df.to_csv(output_file, index = False, encoding = "utf-8")
-        print(f"Saved: {output_file}")
+        print(f"Saved: {output_file}\n")
     
 if __name__ == "__main__":
     main()
