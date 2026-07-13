@@ -18,6 +18,10 @@ for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# CLEANING CONFIGURATION
+# ---------------------------------------------------------------------------
+
 REPLACEMENTS = {
 
     # Common mojibake
@@ -55,32 +59,32 @@ REPLACEMENTS = {
     "Â": "",
 }
 
+COLS_TO_DROP = ["href", "outcome_type", "ext", "outcomeid", "created", 
+                "updated", "links.link"]
+
+RENAME_MAP = {"supportingUrl": "supporting_url"}
+
+STRING_COLS = ["project_id", "grant_reference", "project_title", "id",
+               "supporting_url", "title", "description", "impact"]
+
+TEXT_COLUMNS = ["title", "description", "impact"]
+
+
+# ---------------------------------------------------------------------------
+# DATA PROCESSING FUNCTIONS
+# ---------------------------------------------------------------------------
+
 def csv_to_df(outcome_type):
     input_file = INPUT_DIR / f"gtr_{outcome_type}_latest.csv"
     return pd.read_csv(input_file)
 
-def convert_timestamp(df, columns):
-    """
-    Convert Unix timestamps in milliseconds to pandas datetime format.
-    """
-    for col in columns:
-        if col in df.columns:
-            df[col] = pd.to_datetime(
-                df[col],
-                unit="ms",
-                errors="coerce"
-            )
-    return df
-
-
-def clean_text(value):
+def clean_text(text):
     """
     Clean scraped text while preserving meaningful structure such as
     headings and bullet points.
     """
-    if pd.isna(value):
+    if pd.isna(text):
         return np.nan
-    text = str(value)
     # Decode HTML entities
     text = html.unescape(text)
     # Remove HTML tags
@@ -107,73 +111,120 @@ def clean_text(value):
 
 
 # ---------------------------------------------------------------------------
-# FUNCTIONS TO CLEAN EACH OUTCOME TYPE
+# SHARED CLEANING FUNCTIONS
 # ---------------------------------------------------------------------------
 
-def artisticandcreativeproducts(df):
-    # Drop duplicate outcomes
-    df = df.drop_duplicates("id")
-    # Drop unnecessary columns
-    df = df.drop(columns=["href", "outcome_type", "ext", "outcomeid", 
-                          "created", "updated", "links.link"],
-                          errors="ignore")
-    # Rename columns
-    df = df.rename(columns={"yearFirstProvided": "year", 
-                            "supportingUrl": "supporting_url"})
+def clean_df(df):
+    # Remove duplicate outcomes
+    if "id" in df.columns:
+        df = df.drop_duplicates("id")
     # Convert empty strings to NaN
     df = df.replace(r'^\s*$', np.nan, regex=True)
-    # Fix variable types
-    string_cols = ["project_id", "grant_reference", "project_title", "id",
-                   "supporting_url"]
+    # Remove empty columns
+    df = df.dropna(axis=1, how="all")
+    return df
+
+def drop_columns(df, outcome_type, *extra_cols):
+    """ Drops unnecessary columns. """
+    drop_cols = COLS_TO_DROP.copy()
+    drop_cols.extend(extra_cols)
+    if outcome_type != "all_outcomes":
+        drop_cols.append("outcome_type")
+    return df.drop(columns=drop_cols, errors="ignore")
+
+def rename_columns(df, extra_map=None):
+    """ Renames columns. """
+    rename_map = RENAME_MAP.copy()
+    if extra_map:
+        rename_map.update(extra_map)
+    return df.rename(columns=rename_map)
+
+def convert_to_string(df, *extra_cols):
+    """ Converts columns to string type. """
+    string_cols = STRING_COLS.copy()
+    string_cols.extend(extra_cols)
     for col in string_cols:
-        if col in df:
-            df[col] = df[col].astype("string").str.strip()
-    df["year"] = pd.to_numeric(df["year"], errors="coerce")
-    df["type"] = df["type"].astype("category")
-    # Clean text
-    text_columns = ["title", "description", "impact"]
-    for col in text_columns:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
-            df[f"{col}_clean"] = (df[col].apply(clean_text).astype("string"))
+    return df
+
+def convert_to_numeric(df, cols):
+    for col in cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+def convert_to_category(df, cols):
+    for col in cols:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
+    return df
+
+def convert_to_date(df, columns):
+    """
+    Convert Unix timestamps in milliseconds to pandas datetime format.
+    """
+    for col in columns:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
+    return df
+
+def clean_text_columns(df, *extra_cols):
+    """ Cleans all text columns. """
+    text_cols = TEXT_COLUMNS.copy()
+    text_cols.extend(extra_cols)
+    for col in text_cols:
+        if col in df.columns:
+            df[f"{col}_clean"] = (df[col].astype("string").apply(clean_text).astype("string"))
     return df
 
 
-def collaborations(df):
-    # Drop duplicate outcomes
-    df = df.drop_duplicates("id")  
-    # Drop unnecessary columns
-    df = df.drop(columns=["href", "outcome_type", "ext", "outcomeid", 
-                          "created", "updated", "links.link"],
-                          errors="ignore")   
-    # Rename columns
-    df = df.rename(columns={"parentOrganisation": "parent_org", 
+# ---------------------------------------------------------------------------
+# OUTCOME-SPECIFIC CLEANING FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def artisticandcreativeproducts(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"yearFirstProvided": "year"})
+    df = convert_to_string(df)
+    df = convert_to_numeric(df, ["year"])
+    df = convert_to_category(df, ["type"])
+    df = clean_text_columns(df)
+    return df
+
+def collaborations(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"parentOrganisation": "parent_org", 
                             "childOrganisation": "child_org",
                             "principalInvestigatorContribution": "pi_contribution",
-                            "partnerContribution": "partner_contribution",
-                            "supportingUrl": "supporting_url"})
-    # Convert empty strings to NaN
-    df = df.replace(r'^\s*$', np.nan, regex=True)
-    # Fix variable types
-    string_cols = ["project_id", "grant_reference", "project_title", "id",
-                   "parent_org", "child_org", "supporting_url"]
-    for col in string_cols:
-        if col in df:
-            df[col] = df[col].astype("string").str.strip()
-    date_columns = ["start", "end"]
-    df = convert_timestamp(df, date_columns)
-    category_cols = ["sector", "country"]
-    for col in category_cols:
-        df[col] = df[col].astype("category")
-    # Clean text
-    text_columns = ["title", "description", "pi_contribution", 
-                    "partner_contribution", "impact"]
-    for col in text_columns:
-        if col in df.columns:
-            df[col] = df[col].astype("string").str.strip()
-            df[f"{col}_clean"] = (df[col].apply(clean_text).astype("string"))
+                            "partnerContribution": "partner_contribution",})
+    df = convert_to_string(df, "parent_org", "child_org", "pi_contribution",
+                           "partner_contribution")
+    df = convert_to_date(df, ["start", "end"])
+    df = convert_to_category(df, ["sector", "country"])
+    df = clean_text_columns(df)
     return df
-      
+
+def disseminations(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"primaryAudience": "primary_audience",
+                             "yearsOfDissemination": "dissemination_years",
+                             "typeOfPresentation": "presentation_type",
+                             "geographicReach": "geographic_reach",
+                             "partOfOfficialScheme": "part_of_official_scheme"})
+    df = convert_to_string(df, "results", "dissemination_years")
+    df = convert_to_category(df, ["form", "primary_audience", "presentation_type", 
+                              "geographic_reach"])
+    df = clean_text_columns(df)
+    print(df.info())
+    return df
+
+
+
+
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -196,7 +247,7 @@ def main():
             continue
         print(f"Cleaning: '{outcome_type}'")
         df = pd.read_csv(file, encoding ="utf-8")
-        df = cleaning_function(df)
+        df = cleaning_function(df, outcome_type)
         output_file = OUTPUT_DIR / f"gtr_{outcome_type}_clean.csv"
         df.to_csv(output_file, index = False, encoding = "utf-8")
         print(f"Saved: {output_file}")
