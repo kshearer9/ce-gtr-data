@@ -2,6 +2,8 @@ import pandas as pd
 import html
 import re
 from pathlib import Path
+import numpy as np
+import unicodedata
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -70,24 +72,38 @@ TEXT_COLUMNS = ["title", "abstract_text",
 # CLEANING
 # ---------------------------------------------------------------------------
 
+
 def clean_text(value):
-    """Cleans raw text by decoding HTML entities, removing HTM tags, removing
-    markdown formatting, fixing encoding issues and normalising whitespace."""
+    """
+    Clean scraped text while preserving meaningful structure such as
+    headings and bullet points.
+    """
     if pd.isna(value):
-        return value, False
+        return np.nan
     text = str(value)
     original = text
     # Decode HTML entities
     text = html.unescape(text)
     # Remove HTML tags
     text = re.sub(r"<[^>]+>", "", text)
-    # Remove Markdown bold markers
+    # Remove Markdown formatting
     text = text.replace("**", "")
+    # Normalise line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Convert common bullet symbols to "-"
+    text = re.sub(r"[•●▪◦]", "-", text)
     # Fix encoding artefacts
     for wrong, correct in REPLACEMENTS.items():
         text = text.replace(wrong, correct)
+    # Remove URLs
+    text = re.sub(r"https?://\S+|www\.\S+", "", text)
     # Normalise whitespace
     text = " ".join(text.split())
+    # Convert empty, punctuation-only, or symbol-only values to missing
+    if text == "" or all(
+        unicodedata.category(char)[0] in {"P", "S"} or char.isspace()
+        for char in text):
+        return np.nan
     return text, text != original
 
 
