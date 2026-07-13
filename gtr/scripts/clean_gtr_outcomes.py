@@ -385,6 +385,21 @@ def researchdatabaseandmodels(df, outcome_type):
     df = convert_to_string(df)
     return df
 
+def researchmaterials(df, outcome_type):
+    df = clean_df(df)
+    df = drop_columns(df, outcome_type)
+    df = rename_columns(df, {"softwareDeveloped": "software_developed",
+                             "softwareOpenSourced": "software_open_sourced",
+                             "providedToOthers": "provided_to_others",
+                             "yearFirstProvided": "year"})
+    df = convert_to_numeric(df, ["year"])
+    df = convert_to_category(df, ["type"])
+    df = convert_to_bool(df, ["provided_to_others", "software_developed",
+                              "software_open_source"])
+    df = clean_text_columns(df)
+    df = convert_to_string(df)
+    return df
+
 
 # ---------------------------------------------------------------------------
 # MAIN
