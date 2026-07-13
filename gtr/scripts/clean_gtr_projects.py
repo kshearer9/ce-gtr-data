@@ -107,7 +107,7 @@ def normalise_title(text):
 # ---------------------------------------------------------------------------
 
 def main():
-    df = pd.read_csv(INPUT_FILE)
+    df = pd.read_csv(INPUT_FILE, encoding="utf-8")
     modified_cells = 0
     for col in TEXT_COLUMNS:
         cleaned_values = []
@@ -141,7 +141,7 @@ def main():
     if "title" in df.columns:
         df["title_clean"] = df["title"].apply(normalise_title)
 
-    df.to_csv(OUTPUT_FILE, index=False)
+    df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
 
     print("\n" + "=" * 40)
     print("GTR data cleaning completed.")
