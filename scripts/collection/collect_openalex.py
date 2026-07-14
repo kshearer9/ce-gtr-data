@@ -39,10 +39,10 @@ from datetime import datetime
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
-INPUT_DIR = ROOT_DIR / "gtr" / "data" / "cleaned"
+INPUT_DIR = ROOT_DIR / "data" / "cleaned"
 
-DATA_DIR = ROOT_DIR / "openalex" / "data"
-CACHE_DIR = ROOT_DIR / "openalex" / "cache"
+DATA_DIR = ROOT_DIR / "data" / "processed" / "openalex"
+CACHE_DIR = ROOT_DIR / "cache"
     
 for d in (DATA_DIR, CACHE_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -306,6 +306,7 @@ def fetch_works_batch(work_ids, session, failed):
         failed["works_" + ",".join(uncached)] = {
             "url": url,
             "params": params,
+            "headers": HEADERS,
             "type": "works",
             "work_ids": uncached
         }
@@ -327,6 +328,7 @@ def fetch_works_batch(work_ids, session, failed):
                 "per-page": len(missing),
                 "api_key": API_KEY
             },
+            "headers": HEADERS,
             "type": "works",
             "work_ids": missing
         }
@@ -439,7 +441,22 @@ def main():
     parser.add_argument("--test-limit", type=int, default=None, help = "Limit number of rows processed (for testing)")
     args = parser.parse_args()
 
-    df = pd.read_csv(INPUT_DIR / "gtr_ce_projects_clean.csv", encoding = "utf-8")
+    # Load GtR project data
+    cleaned_file = INPUT_DIR / "gtr_projects_clean.csv"
+    processed_file = ROOT_DIR / "data" / "processed" / "gtr" / "gtr_projects_latest.csv"
+    # If data has not been cleaned yet, use data from processed folder
+    if cleaned_file.exists():
+        input_file = cleaned_file
+        print("Using cleaned GtR projects dataset.")
+    elif processed_file.exists():
+        input_file = processed_file
+        print("Cleaned dataset not found. Using processed GtR projects dataset.")
+    else:
+        raise FileNotFoundError(
+            "Could not find either gtr_projects_clean.csv or gtr_projects_latest.csv")
+
+    df = pd.read_csv(input_file, encoding="utf-8")
+    df = pd.read_csv(INPUT_DIR / "gtr_projects_clean.csv", encoding = "utf-8")
 
     if args.test_limit:
         df = df.head(args.test_limit)

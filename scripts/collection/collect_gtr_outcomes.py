@@ -20,18 +20,15 @@ HEADERS = {
 # DIRECTORIES
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-GTR_DIR = SCRIPT_DIR.parent
-DATA_DIR = GTR_DIR / "data"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
-RAW_DIR = DATA_DIR / "raw"
-PROC_DIR = DATA_DIR / "processed"
-OUTCOME_DIR = PROC_DIR / "outcomes"
+INPUT_DIR = ROOT_DIR / "data" / "raw"
+OUTPUT_DIR = ROOT_DIR / "data" / "processed" / "gtr" / "outcomes"
 
-CACHE_DIR = GTR_DIR / "cache"
-CKPT_DIR = DATA_DIR / "checkpoints"
+CACHE_DIR = ROOT_DIR / "cache"
+CKPT_DIR = ROOT_DIR / "checkpoints"
 
-for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
+for d in (INPUT_DIR, OUTPUT_DIR, CACHE_DIR, CKPT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
@@ -155,7 +152,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = requests.Session()
 
-    file_path = RAW_DIR / "gtr_outcome_hrefs.csv"
+    file_path = INPUT_DIR / "gtr_outcome_hrefs.csv"
     df = pd.read_csv(file_path, encoding = "utf-8")
     if args.test_limit:
         df = df.head(args.test_limit)
@@ -192,19 +189,19 @@ def main():
     for outcome_type, rows in raw_by_type.items():
         df_out = pd.json_normalize(rows, sep=".")
         df_out.to_csv(
-            OUTCOME_DIR / f"gtr_{outcome_type}_{timestamp}.csv",
+            OUTPUT_DIR / f"gtr_{outcome_type}_{timestamp}.csv",
             index=False, encoding="utf-8"
         )
 
         df_out.to_csv(
-            OUTCOME_DIR / f"gtr_{outcome_type}_latest.csv",
+            OUTPUT_DIR / f"gtr_{outcome_type}_latest.csv",
             index=False, encoding="utf-8"
         )
 
     full_df_out = pd.json_normalize(all_outcomes, sep=".")
-    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_{timestamp}.csv", 
+    full_df_out.to_csv(OUTPUT_DIR / f"gtr_all_outcomes_{timestamp}.csv", 
                        index=False, encoding="utf-8")
-    full_df_out.to_csv(OUTCOME_DIR / f"gtr_all_outcomes_latest.csv",
+    full_df_out.to_csv(OUTPUT_DIR / f"gtr_all_outcomes_latest.csv",
                        index=False, encoding="utf-8")
     
     if failed:

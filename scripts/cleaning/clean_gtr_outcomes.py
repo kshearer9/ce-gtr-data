@@ -14,67 +14,32 @@ Exported Outputs:
 - gtr_{outcome_type}_clean.csv - cleaned dataset for each GtR outcome type
 """
 
+import sys
 from pathlib import Path
+sys.path.append(str(Path(__file__). resolve().parents[2]))
 import pandas as pd
 import numpy as np
 import html
 import re
 import unicodedata
-from nameparser import HumanName
+from utils.constants import TRUE_VALUES, FALSE_VALUES
+from utils.cleaning import normalise_name, clean_text
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-GTR_DIR = SCRIPT_DIR.parent
-INPUT_DIR = GTR_DIR / "data" / "processed" / "outcomes"
-OUTPUT_DIR = GTR_DIR / "data" / "cleaned" / "outcomes"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
+INPUT_DIR = ROOT_DIR / "data" / "processed" / "gtr" / "outcomes"
+OUTPUT_DIR = ROOT_DIR / "data" / "cleaned" / "outcomes"
 
 for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-
 # ---------------------------------------------------------------------------
 # CLEANING CONFIGURATION
 # ---------------------------------------------------------------------------
-
-REPLACEMENTS = {
-
-    # Common mojibake
-    "‚Äì": "–",
-    "‚Äî": "—",
-    "‚Äò": "'",
-    "‚Äô": "'",
-    "‚Äú": '"',
-    "‚Äù": '"',
-    "‚Ä¶": "...",
-    "‚Ä¢": "•",
-    "‚Ñ¢": "™",
-
-    # Alternative mojibake
-    "â€“": "–",
-    "â€”": "—",
-    "â€˜": "'",
-    "â€™": "'",
-    "â€œ": '"',
-    "â€\x9d": '"',
-    "â€¦": "...",
-    "â€¢": "•",
-    "â„¢": "™",
-    "Â£": "£",
-
-    # HTML entities
-    "&quot;": '"',
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&#39;": "'",
-
-    # Extra encoding artefacts
-    "\xa0": " ",
-    "Â": "",
-}
 
 COLS_TO_DROP = ["href", "gtr_outcome_type", "ext", "outcomeid", "created", 
                 "updated", "links.link"]
@@ -110,59 +75,6 @@ ALL_OUTCOMES_DROP_COLS = ["providedToOthers", "journalTitle", "pubMedId",
 # ---------------------------------------------------------------------------
 # DATA PROCESSING FUNCTIONS
 # ---------------------------------------------------------------------------
-
-def clean_text(text):
-    """
-    Clean text fields for NLP by removing formatting, encoding artefacts,
-    HTML, URLs and emails.
-    """
-    if pd.isna(text):
-        return np.nan
-    # Decode HTML entities
-    text = html.unescape(text)
-    # Fix encoding artefacts
-    for wrong, correct in REPLACEMENTS.items():
-        text = text.replace(wrong, correct)
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Remove Markdown formatting
-    text = re.sub(r"[*_`#]+", "", text)
-    # Convert common bullet symbols to "-"
-    text = re.sub(r"[•●▪◦]", "-", text)
-    # Remove decorative formatting
-    text = re.sub(r"%{3,}", " ", text)
-    # Remove URLs
-    text = re.sub(r"https?://\S+|www\.\S+", "", text)
-    # Remove emails
-    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
-    # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-    # Convert empty, punctuation-only, or symbol-only values to missing
-    if text == "" or all(
-        unicodedata.category(char)[0] in {"P", "S"} or char.isspace()
-        for char in text):
-        return np.nan
-    return text
-
-
-def normalise_name(name):
-    if pd.isna(name):
-        return pd.NA
-    name = str(name).strip()
-    # Remove commas and full stops
-    name = re.sub(r"[,.]", "", name)
-    # Collapse whitespace
-    name = " ".join(name.split())
-    parts = name.split()
-    # Already looks like surname and initials
-    if len(parts) >= 2 and all(len(p) <= 2 for p in parts[1:]):
-        return name
-    # Only parse obvious full names
-    if len(parts) == 2:
-        parsed = HumanName(name)
-        if parsed.first and parsed.last:
-            return f"{parsed.last} {parsed.first[0]}"
-    return name
 
 
 def merge_url(df):
@@ -305,8 +217,6 @@ def convert_to_bool(df, cols):
     Convert columns to boolean type.
     Handles existing booleans and common text/numeric representations.
     """
-    true_values = {"true", "t", "yes", "y", "1", "1.0"}
-    false_values = {"false", "f", "no", "n", "0", "0.0"}
     for col in cols:
         if col in df.columns:
             # Already boolean - leave as is
@@ -314,8 +224,8 @@ def convert_to_bool(df, cols):
                 continue
             # Convert strings to lowercase for matching
             values = df[col].astype("string").str.strip().str.lower()
-            df[col] = values.map(lambda x: True if x in true_values
-                                 else False if x in false_values 
+            df[col] = values.map(lambda x: True if x in TRUE_VALUES
+                                 else False if x in FALSE_VALUES 
                                  else pd.NA).astype("boolean")
     return df
 

@@ -35,8 +35,8 @@ Outputs (in ./data/):
   raw/        -> raw JSON for each search term (written incrementally, kept for
                  reproducibility)
   processed/  -> three CSVs:
-    1. gtr_ce_projects_<timestamp>.csv          (kept projects)
-    2. gtr_ce_all_with_decision_<timestamp>.csv (all projects + filter decision)
+    1. gtr_projects_<timestamp>.csv          (kept projects)
+    2. gtr_all_with_decision_<timestamp>.csv (all projects + filter decision)
     3. gtr_validation_sample_<timestamp>.csv    (hand-coding sample)
   checkpoints/ -> resume state (screened set + enriched-so-far); safe to delete
                   once a run has finished cleanly.
@@ -65,15 +65,14 @@ import sqlite3
 # DIRECTORIES
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-GTR_DIR = SCRIPT_DIR.parent
-DATA_DIR = GTR_DIR / "data"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = ROOT_DIR / "data"
 
 RAW_DIR = DATA_DIR / "raw"
-PROC_DIR = DATA_DIR / "processed"
+PROC_DIR = DATA_DIR / "processed" / "gtr"
 
-CACHE_DIR = GTR_DIR / "cache"
-CKPT_DIR = DATA_DIR / "checkpoints"
+CACHE_DIR = ROOT_DIR / "cache"
+CKPT_DIR = ROOT_DIR / "checkpoints"
 
 for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -1007,13 +1006,13 @@ def main():
     all_df_out = drop_internal(all_df)
 
     # ---- Output 1: kept projects ----
-    out_path = PROC_DIR / f"gtr_ce_projects_{timestamp}.csv"
-    latest_path = PROC_DIR / "gtr_ce_projects_latest.csv"
+    out_path = PROC_DIR / f"gtr_projects_{timestamp}.csv"
+    latest_path = PROC_DIR / "gtr_projects_latest.csv"
     kept_df.to_csv(out_path, index=False, encoding="utf-8")
     kept_df.to_csv(latest_path, index=False, encoding="utf-8")
 
     # ---- Output 2: full set with filter decisions (audit) ----
-    all_path = PROC_DIR / f"gtr_ce_all_with_decision_{timestamp}.csv"
+    all_path = PROC_DIR / f"gtr_all_with_decision_{timestamp}.csv"
     all_df_out.to_csv(all_path, index=False, encoding="utf-8")
 
     # ---- Output 3: validation sample for hand-coding ----

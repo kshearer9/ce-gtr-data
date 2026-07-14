@@ -4,62 +4,23 @@ import re
 from pathlib import Path
 import numpy as np
 import unicodedata
+from utils.constants import REPLACEMENTS
+from utils.cleaning import normalise_name
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-GTR_DIR = SCRIPT_DIR.parent
-PROC_DIR = GTR_DIR / "data" / "processed"
-CLEAN_DIR = GTR_DIR / "data" / "cleaned"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
-for d in (PROC_DIR, CLEAN_DIR):
+INPUT_DIR = ROOT_DIR / "data" / "processed" / "gtr"
+OUTPUT_DIR = ROOT_DIR / "data" / "cleaned"
+
+for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILE = PROC_DIR / "gtr_ce_projects_latest.csv"
-OUTPUT_FILE = CLEAN_DIR / "gtr_projects_clean.csv"
-
-# ---------------------------------------------------------------------------
-# ENCODING / HTML FIXES
-# ---------------------------------------------------------------------------
-
-REPLACEMENTS = {
-
-    # Common mojibake
-    "‚Äì": "–",
-    "‚Äî": "—",
-    "‚Äò": "'",
-    "‚Äô": "'",
-    "‚Äú": '"',
-    "‚Äù": '"',
-    "‚Ä¶": "...",
-    "‚Ä¢": "•",
-    "‚Ñ¢": "™",
-
-    # Alternative mojibake
-    "â€“": "–",
-    "â€”": "—",
-    "â€˜": "'",
-    "â€™": "'",
-    "â€œ": '"',
-    "â€\x9d": '"',
-    "â€¦": "...",
-    "â€¢": "•",
-    "â„¢": "™",
-    "Â£": "£",
-
-    # HTML entities
-    "&quot;": '"',
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&#39;": "'",
-
-    # Extra encoding artefacts
-    "\xa0": " ",
-    "Â": "",
-}
+INPUT_FILE = INPUT_DIR / "gtr_projects_latest.csv"
+OUTPUT_FILE = OUTPUT_DIR / "gtr_projects_clean.csv"
 
 # ---------------------------------------------------------------------------
 # COLUMNS TO CLEAN
@@ -158,6 +119,8 @@ def main():
         print("Duplicate title :", df["title"].duplicated().sum())
     if "title" in df.columns:
         df["title_clean"] = df["title"].apply(normalise_title)
+    if "principal_investigator" in df.columns:
+        df["pi_clean"] = df["principal_investigator"].apply(normalise_name)
 
     df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
 
