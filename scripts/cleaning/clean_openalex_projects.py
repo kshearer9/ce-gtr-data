@@ -1,0 +1,92 @@
+from pathlib import Path
+import pandas as pd
+from utils.cleaning import (normalise_name, convert_to_string, 
+                            convert_to_date, clean_text_columns, 
+                            convert_to_category, convert_to_numeric)
+
+# ---------------------------------------------------------------------------
+# FILE SETUP
+# ---------------------------------------------------------------------------
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
+INPUT_DIR = ROOT_DIR / "data" / "processed" / "openalex" 
+OUTPUT_DIR = ROOT_DIR / "data" / "cleaned"
+
+for d in (INPUT_DIR, OUTPUT_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+
+STRING_COLUMNS = [
+    "project_id",
+    "project_title",
+    "grant_reference",
+    "project_openalex_url",
+    "ukri_url"
+]
+
+TEXT_COLUMNS = ["description"]
+
+NUMERIC_COLUMNS = [
+    "funding_amount",
+    "primary_topic_score"
+]
+
+DATE_COLUMNS = [
+    "start_date",
+    "end_date"
+]
+
+CATEGORY_COLUMNS = [
+    "currency",
+    "funding_type",
+    "primary_topic",
+    "domain",
+    "field",
+    "subfield"
+]
+
+def clean_authors(authors):
+    """
+    Normalise semicolon-separated author names.
+    """
+    if pd.isna(authors):
+        return pd.NA
+    cleaned = []
+    for name in str(authors).split(";"):
+        name = name.strip()
+        if not name:
+            continue
+        normalised = normalise_name(name)
+        if normalised:
+            cleaned.append(normalised)
+    return "; ".join(cleaned) if cleaned else pd.NA
+
+
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
+
+def main():
+    processed_file = INPUT_DIR / "openalex_projects_latest.csv"
+    if processed_file.exists():
+        input_file = processed_file
+    else:
+        raise FileNotFoundError(
+            "Could not find openalex_projects_latest.csv")
+    
+    df = pd.read_csv(input_file, encoding="utf-8")
+    df = clean_text_columns(df, *TEXT_COLUMNS)
+    df = convert_to_numeric(df, *NUMERIC_COLUMNS)
+    df = convert_to_date(df, *DATE_COLUMNS)
+    df = convert_to_string(df, *STRING_COLUMNS)
+    df["funding_type"] = df["funding_type"].str.replace("_", " ")
+    df = convert_to_category(df, *CATEGORY_COLUMNS)
+    output_file = OUTPUT_DIR / "openalex_projects_clean.csv"
+    df.to_csv(output_file, index = False, encoding = "utf-8")
+    print(f"Saved: {output_file.name} "
+    f"({len(df):,} rows × {len(df.columns)} columns)\n") 
+
+
+if __name__ == "__main__":
+    main()

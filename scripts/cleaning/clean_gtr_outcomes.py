@@ -96,7 +96,7 @@ def merge_date(df):
     1. Explicit year fields
     3. Start/end dates (expanded into comma-separated years)
     """
-    df["year"] = pd.NA
+    df["year"] = np.nan
     year_columns = [
         "datePublished",
         "yearFirstProvided",
@@ -108,6 +108,9 @@ def merge_date(df):
         if col in df.columns:
             if col == "datePublished":
                 df["year"] = df["year"].fillna(df[col].dt.year.astype("string"))
+            elif col == "yearsOfDissemination":
+                df["year"] = df["year"].fillna(df[col].astype("string").str
+                                               .replace(r"\s*,\s*", "; ", regex=True))
             else:
                 df["year"] = df["year"].fillna(df[col].astype("string"))
     # If start and end dates provided, convert to same form as years of dissemination
@@ -117,7 +120,7 @@ def merge_date(df):
             end_year = df["end"].dt.year
             missing_year = df["year"].isna()
             df.loc[missing_year, "year"] = df.loc[missing_year].apply(
-                lambda row: (",".join(str(year)
+                lambda row: ("; ".join(str(year)
                         for year in range(
                             int(start_year[row.name]),
                             int(end_year[row.name]) + 1))
@@ -300,8 +303,8 @@ def collaborations(df, outcome_type):
 def disseminations(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
+    df = merge_date(df)
     df = rename_columns(df, {"primaryAudience": "primary_audience",
-                             "yearsOfDissemination": "year",
                              "typeOfPresentation": "presentation_type",
                              "geographicReach": "geographic_reach",
                              "partOfOfficialScheme": "part_of_official_scheme"})
