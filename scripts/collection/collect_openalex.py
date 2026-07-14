@@ -326,12 +326,10 @@ def fetch_works_batch(work_ids, session, failed):
             "params": {
                 "filter": f"openalex:{'|'.join(missing)}",
                 "per-page": len(missing),
-                "api_key": API_KEY
-            },
+                "api_key": API_KEY},
             "headers": HEADERS,
             "type": "works",
-            "work_ids": missing
-        }
+            "work_ids": missing}
     return missing
 
 def retry_failed_requests(failed, session, max_attempts=3):
@@ -350,7 +348,6 @@ def retry_failed_requests(failed, session, max_attempts=3):
                 if request["type"] == "awards":
                     results = r.json().get("results", [])
                     save_award(key, results)
-
                 elif request["type"] == "works":
                     for work in r.json().get("results", []):
                         work_id = work["id"].split("/")[-1]
@@ -367,7 +364,7 @@ def extract_award_metadata(a):
     Extracts metadata fields from OpenAlex awards.
     """
     return {
-        "openalex_url": a.get("id", ""),
+        "project_openalex_url": a.get("id", ""),
         "description": a.get("description", ""),
         "funding_amount": a.get("amount", ""),
         "currency": a.get("currency", ""),
@@ -401,12 +398,6 @@ def reconstruct_abstract(inverted_index):
 def extract_work_url(w):
     """
     Returns the best available URL for an OpenAlex work.
-
-    Priority:
-    1. DOI
-    2. Landing page URL
-    3. PDF URL
-    4. None if no URL exists
     """
     # 1. DOI
     if w.get("doi"):
