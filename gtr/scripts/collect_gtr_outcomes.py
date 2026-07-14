@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 import requests
 from tqdm import tqdm
-import collect_gtr as gtr
+import collect_gtr_projects as gtr
 from collections import defaultdict
 import re
 import sqlite3
