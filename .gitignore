@@ -1,9 +1,9 @@
 .DS_Store
 .vscode/
 data/
+checkpoints/
+Cache/
 *.json
 *.db
-API Data/
-GtR CSVs/
 __pycache__/
 *.pyc
