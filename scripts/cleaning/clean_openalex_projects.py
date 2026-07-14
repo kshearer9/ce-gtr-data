@@ -38,9 +38,9 @@ DATE_COLUMNS = [
 ]
 
 CATEGORY_COLUMNS = [
-    "currency"
+    "currency",
     "funding_type",
-    "primary_topic"
+    "primary_topic",
     "domain",
     "field",
     "subfield"
@@ -85,7 +85,8 @@ def main():
     output_file = OUTPUT_DIR / "openalex_projects_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")
     print(f"Saved: {output_file.name} "
-    f"({len(df):,} rows × {len(df.columns)} columns)\n")    
+    f"({len(df):,} rows × {len(df.columns)} columns)\n") 
+    print(df.info())   
 
 
 if __name__ == "__main__":
