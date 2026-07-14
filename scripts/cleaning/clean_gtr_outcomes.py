@@ -96,7 +96,7 @@ def merge_date(df):
     1. Explicit year fields
     3. Start/end dates (expanded into comma-separated years)
     """
-    df["year"] = pd.NA
+    df["year"] = np.nan
     year_columns = [
         "datePublished",
         "yearFirstProvided",
@@ -303,8 +303,8 @@ def collaborations(df, outcome_type):
 def disseminations(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
+    df = merge_date(df)
     df = rename_columns(df, {"primaryAudience": "primary_audience",
-                             "yearsOfDissemination": "year",
                              "typeOfPresentation": "presentation_type",
                              "geographicReach": "geographic_reach",
                              "partOfOfficialScheme": "part_of_official_scheme"})
