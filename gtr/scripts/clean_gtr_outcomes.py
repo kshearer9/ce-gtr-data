@@ -63,10 +63,10 @@ REPLACEMENTS = {
 COLS_TO_DROP = ["href", "gtr_outcome_type", "ext", "outcomeid", "created", 
                 "updated", "links.link"]
 
-RENAME_MAP = {"supportingUrl": "url"}
+RENAME_MAP = {"supportingUrl": "url", "id": "outcome_id"}
 
-STRING_COLS = ["project_id", "grant_reference", "project_title", "id",
-               "supporting_url", "title", "description", "impact"]
+STRING_COLS = ["project_id", "grant_reference", "project_title", "outcome_id",
+               "supporting_url", "title", "description", "impact", "url"]
 
 TEXT_COLUMNS = ["title", "description", "impact"]
 
@@ -138,6 +138,58 @@ def normalise_name(name):
             return f"{parsed.last} {parsed.first[0]}"
     return name
 
+def merge_url(df):
+    """
+    Create a single URL column using priority:
+    supporting_url > DOI > website > patent_url
+    """
+    df["url"] = np.nan
+    url_cols = ["supportingUrl", "publicationUrl", "doi", "website", "patentUrl"]
+    for col in url_cols:
+        if col in df.columns:
+            df["url"] = df["url"].fillna(df[col])
+    df = df.drop(columns = url_cols, errors="ignore")
+    return df
+
+def merge_date(df):
+    df["year"] = pd.NA
+    year_columns = [
+        "datePublished",
+        "yearFirstProvided",
+        "yearsOfDissemination",
+        "yearEstablished",
+        "yearDevelopmentCompleted",
+        "yearProtectionGranted"]
+    for col in year_columns:
+        if col in df.columns:
+            if col == "datePublished":
+                df["year"] = df["year"].fillna(df[col].dt.year.astype("string"))
+            else:
+                df["year"] = df["year"].fillna(df[col].astype("string"))
+    # If start and end dates provided, convert to same form as years of dissemination
+    if "start" in df.columns:
+        start_year = df["start"].dt.year
+        if "end" in df.columns:
+            end_year = df["end"].dt.year
+            missing_year = df["year"].isna()
+            df.loc[missing_year, "year"] = df.loc[missing_year].apply(
+                lambda row: (",".join(str(year)
+                        for year in range(
+                            int(start_year[row.name]),
+                            int(end_year[row.name]) + 1))
+                    if pd.notna(end_year[row.name])
+                    and pd.notna(start_year[row.name])
+                    and end_year[row.name] >= start_year[row.name]
+                    else str(int(start_year[row.name]))
+                    if pd.notna(start_year[row.name])
+                    else pd.NA), axis=1)
+        else:
+            df["year"] = df["year"].fillna(start_year.astype("string"))
+    # Remove original date/year columns
+    df = df.drop(columns=year_columns + ["start", "end"], errors="ignore")
+    return df
+            
+
 
 # ---------------------------------------------------------------------------
 # SHARED CLEANING FUNCTIONS
@@ -145,8 +197,8 @@ def normalise_name(name):
 
 def clean_df(df):
     # Remove duplicate outcomes
-    if "id" in df.columns:
-        df = df.drop_duplicates("id")
+    if "outcome_id" in df.columns:
+        df = df.drop_duplicates("outcome_id")
     # Convert empty strings to NaN
     df = df.replace({
         r"(?i)^\s*$": np.nan,
@@ -352,8 +404,8 @@ def products(df, outcome_type):
     df = drop_columns(df, outcome_type)
     df = rename_columns(df, {"clinicalTrial": "clinical_trial",
                              "ukcrnIsctnId": "clinical_trial_id",
-                             "yearDevelopmentCompleted": "year_completed"})
-    df = convert_to_numeric(df, ["year_completed"])
+                             "yearDevelopmentCompleted": "year"})
+    df = convert_to_numeric(df, ["year"])
     df = convert_to_category(df, ["type", "stage", "status"])
     df = clean_text_columns(df)
     df = convert_to_string(df, "clinical_trial", "clinical_trial_id")
@@ -450,6 +502,40 @@ def spinouts(df, outcome_type):
     df = convert_to_bool(df, ["ip_exploited", "joint_venture"])
     df = clean_text_columns(df, "company_description")
     df = convert_to_string(df, "company_name", "reg_num")
+    return df
+
+def all_outcomes(df, outcome_type):
+    df = clean_df(df)
+    df = merge_url(df)
+    df = convert_to_date(df, ["datePublished", "start", "end"])
+    df = merge_date(df)
+    df["type"] = df["type"].fillna(df["form"])
+    df["organisations"] = (df[["parentOrganisation", "childOrganisation"]]
+        .astype("string").apply(lambda x: "; ".join(x.dropna()), axis=1))
+    df["author_clean"] = df["author"].apply(normalise_name)
+    df = drop_columns(df, outcome_type, "providedToOthers", "journalTitle", 
+                      "pubMedId", "isbn", "issn", 
+                      "seriesNumber", "seriesTitle", "subTitle", "volumeTitle",
+                      "volumeNumber", "issue", "totalPages", "edition",
+                      "chapterNumber", "chapterTitle", "pageReference", 
+                      "conferenceEvent", "conferenceLocation", "conferenceNumber", 
+                      "parentOrganisation", "childOrganisation",
+                      "principalInvestigatorContribution", "partnerContribution",
+                      "sector", "country", "form", "primaryAudience", "results",
+                      "typeOfPresentation", "geographicReach", 
+                      "partOfOfficialScheme", "narrative", "organisation",
+                      "department", "fundingId", "amount.currencyCode", 
+                      "amount.amount", "influence", "guidelineTitle", "methods",
+                      "areas.item", "softwareDeveloped", "softwareOpenSourced",
+                      "protection", "patentId", 
+                      "licensed",  "openSourceLicense", "companyName",
+                      "companyDescription", "registrationNumber",
+                      "ipExploitated", "jointVenture", "stage", "status",
+                      "clinicalTrial", "ukcrnlsctnld")
+    df = rename_columns(df)
+    df = convert_to_category(df, ["type"])
+    df = clean_text_columns(df)
+    df = convert_to_string(df, "year", "author", "organisations")
     return df
 
 
