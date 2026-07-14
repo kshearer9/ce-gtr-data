@@ -18,7 +18,7 @@ for d in (PROC_DIR, CLEAN_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 INPUT_FILE = PROC_DIR / "gtr_ce_projects_latest.csv"
-OUTPUT_FILE = CLEAN_DIR / "gtr_ce_projects_clean.csv"
+OUTPUT_FILE = CLEAN_DIR / "gtr_projects_clean.csv"
 
 # ---------------------------------------------------------------------------
 # ENCODING / HTML FIXES
@@ -79,7 +79,7 @@ def clean_text(value):
     headings and bullet points.
     """
     if pd.isna(value):
-        return np.nan
+        return np.nan, False
     text = str(value)
     original = text
     # Decode HTML entities
