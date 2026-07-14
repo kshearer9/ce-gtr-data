@@ -14,14 +14,10 @@ Exported Outputs:
 - gtr_{outcome_type}_clean.csv - cleaned dataset for each GtR outcome type
 """
 
-import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__). resolve().parents[2]))
 import pandas as pd
 import numpy as np
-import html
 import re
-import unicodedata
 from utils.constants import TRUE_VALUES, FALSE_VALUES
 from utils.cleaning import normalise_name, clean_text
 
