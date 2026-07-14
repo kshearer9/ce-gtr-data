@@ -60,10 +60,6 @@ REPLACEMENTS = {
     "Â": "",
 }
 
-EMPTY_TEXT_VALUES = {"nil", "null", "none", "n/a", "na", "not available",
-                     "not applicable", "no abstract", "abstract not available", 
-                     "abstract to follow", "to follow", "unknown", "-"}
-
 COLS_TO_DROP = ["href", "gtr_outcome_type", "ext", "outcomeid", "created", 
                 "updated", "links.link"]
 
@@ -103,8 +99,8 @@ def clean_text(text):
     text = re.sub(r"https?://\S+|www\.\S+", "", text)
     # Remove emails
     text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
-    # Normalise whitespace
-    text = " ".join(text.split())
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
     # Convert empty, punctuation-only, or symbol-only values to missing
     if text == "" or all(
         unicodedata.category(char)[0] in {"P", "S"} or char.isspace()
@@ -152,7 +148,14 @@ def clean_df(df):
     if "id" in df.columns:
         df = df.drop_duplicates("id")
     # Convert empty strings to NaN
-    df = df.replace({r"^\s*$": np.nan, r"(?i)^nil$": np.nan}, regex=True)
+    df = df.replace({
+        r"(?i)^\s*$": np.nan,
+        r"(?i)^nil$": np.nan,
+        r"(?i)^null$": np.nan,
+        r"(?i)^none$": np.nan,
+        r"(?i)^n/?a\.?$": np.nan,
+        r"(?i)^n\.?a\.?$": np.nan,
+    }, regex=True)
     # Remove empty columns
     df = df.replace("[]", np.nan)
     df = df.dropna(axis=1, how="all")
