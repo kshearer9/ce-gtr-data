@@ -108,6 +108,9 @@ def merge_date(df):
         if col in df.columns:
             if col == "datePublished":
                 df["year"] = df["year"].fillna(df[col].dt.year.astype("string"))
+            elif col == "yearsOfDissemination":
+                df["year"] = df["year"].fillna(df[col].astype("string").str
+                                               .replace(r"\s*,\s*", "; ", regex=True))
             else:
                 df["year"] = df["year"].fillna(df[col].astype("string"))
     # If start and end dates provided, convert to same form as years of dissemination
@@ -117,7 +120,7 @@ def merge_date(df):
             end_year = df["end"].dt.year
             missing_year = df["year"].isna()
             df.loc[missing_year, "year"] = df.loc[missing_year].apply(
-                lambda row: (",".join(str(year)
+                lambda row: ("; ".join(str(year)
                         for year in range(
                             int(start_year[row.name]),
                             int(end_year[row.name]) + 1))
