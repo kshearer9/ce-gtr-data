@@ -1,3 +1,19 @@
+"""
+Cleans UKRI Gateway to Research (GtR) outcome datasets.
+
+Pipeline:
+- Load processed GtR outcome datasets
+- Remove duplicate records and empty values
+- Standardise column names and data types
+- Clean free-text fields (encoding, HTML, Markdown, URLs, emails)
+- Normalise metadata (names, dates, URLs, identifiers)
+- Merge equivalent fields into common variables (e.g. year, URL)
+- Export cleaned outcome datasets by outcome type and as a combined dataset
+
+Exported Outputs:
+- gtr_{outcome_type}_clean.csv - cleaned dataset for each GtR outcome type
+"""
+
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -70,16 +86,36 @@ STRING_COLS = ["project_id", "grant_reference", "project_title", "outcome_id",
 
 TEXT_COLUMNS = ["title", "description", "impact"]
 
+ALL_OUTCOMES_DROP_COLS = ["providedToOthers", "journalTitle", "pubMedId", 
+                          "isbn", "issn", "seriesNumber", "seriesTitle", 
+                          "subTitle", "volumeTitle", "volumeNumber", "issue", 
+                          "totalPages", "edition", "chapterNumber", "chapterTitle", 
+                          "pageReference", "conferenceEvent", "conferenceLocation", 
+                          "conferenceNumber", "parentOrganisation", 
+                          "childOrganisation", "principalInvestigatorContribution", 
+                          "partnerContribution", "sector", "country", "form", 
+                          "primaryAudience", "results", "typeOfPresentation", 
+                          "geographicReach", "partOfOfficialScheme", "narrative", 
+                          "organisation", "department", "fundingId", 
+                          "amount.currencyCode", "amount.amount", "influence", 
+                          "guidelineTitle", "methods", "areas.item", 
+                          "softwareDeveloped", "softwareOpenSourced",  
+                          "protection", "patentId", "licensed",  
+                          "openSourceLicense", "companyName", 
+                          "companyDescription", "registrationNumber",
+                          "ipExploitated", "jointVenture", "stage", "status",
+                          "clinicalTrial", "ukcrnIsctnId"]
+
 
 # ---------------------------------------------------------------------------
 # DATA PROCESSING FUNCTIONS
 # ---------------------------------------------------------------------------
 
-def csv_to_df(outcome_type):
-    input_file = INPUT_DIR / f"gtr_{outcome_type}_latest.csv"
-    return pd.read_csv(input_file)
-
 def clean_text(text):
+    """
+    Clean text fields for NLP by removing formatting, encoding artefacts,
+    HTML, URLs and emails.
+    """
     if pd.isna(text):
         return np.nan
     # Decode HTML entities
@@ -108,16 +144,6 @@ def clean_text(text):
         return np.nan
     return text
 
-def extract_related_article(text):
-    if pd.isna(text):
-        return np.nan
-    matches = re.findall(
-        r"Related Article:\s*(.*?)(?=\nRelated Article:|$)",
-        text, flags=re.DOTALL)
-    if matches:
-        return " | ".join(matches)
-    return np.nan
-
 
 def normalise_name(name):
     if pd.isna(name):
@@ -138,10 +164,10 @@ def normalise_name(name):
             return f"{parsed.last} {parsed.first[0]}"
     return name
 
+
 def merge_url(df):
     """
-    Create a single URL column using priority:
-    supporting_url > DOI > website > patent_url
+    Create a single URL column.
     """
     df["url"] = np.nan
     url_cols = ["supportingUrl", "publicationUrl", "doi", "website", "patentUrl"]
@@ -151,7 +177,13 @@ def merge_url(df):
     df = df.drop(columns = url_cols, errors="ignore")
     return df
 
+
 def merge_date(df):
+    """
+    Merge all year/date fields into a single 'year' column.
+    1. Explicit year fields
+    3. Start/end dates (expanded into comma-separated years)
+    """
     df["year"] = pd.NA
     year_columns = [
         "datePublished",
@@ -190,7 +222,6 @@ def merge_date(df):
     return df
             
 
-
 # ---------------------------------------------------------------------------
 # SHARED CLEANING FUNCTIONS
 # ---------------------------------------------------------------------------
@@ -198,7 +229,11 @@ def merge_date(df):
 def clean_df(df):
     # Remove duplicate outcomes
     if "outcome_id" in df.columns:
+        before = len(df)
         df = df.drop_duplicates("outcome_id")
+        removed = before - len(df)
+        if removed:
+            print(f"  Removed {removed} duplicate outcomes")
     # Convert empty strings to NaN
     df = df.replace({
         r"(?i)^\s*$": np.nan,
@@ -213,6 +248,7 @@ def clean_df(df):
     df = df.dropna(axis=1, how="all")
     return df
 
+
 def drop_columns(df, outcome_type, *extra_cols):
     """ Drops unnecessary columns. """
     drop_cols = COLS_TO_DROP.copy()
@@ -221,12 +257,14 @@ def drop_columns(df, outcome_type, *extra_cols):
         drop_cols.append("outcome_type")
     return df.drop(columns=drop_cols, errors="ignore")
 
+
 def rename_columns(df, extra_map=None):
     """ Renames columns. """
     rename_map = RENAME_MAP.copy()
     if extra_map:
         rename_map.update(extra_map)
     return df.rename(columns=rename_map)
+
 
 def convert_to_string(df, *extra_cols):
     """ Converts columns to string type. """
@@ -237,17 +275,20 @@ def convert_to_string(df, *extra_cols):
             df[col] = df[col].astype("string").str.strip()
     return df
 
+
 def convert_to_numeric(df, cols):
     for col in cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
+
 def convert_to_category(df, cols):
     for col in cols:
         if col in df.columns:
             df[col] = df[col].astype("category")
     return df
+
 
 def convert_to_date(df, columns):
     """
@@ -257,6 +298,7 @@ def convert_to_date(df, columns):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
     return df
+
 
 def convert_to_bool(df, cols):
     """
@@ -277,6 +319,7 @@ def convert_to_bool(df, cols):
                                  else pd.NA).astype("boolean")
     return df
 
+
 def clean_text_columns(df, *extra_cols):
     """ Cleans all text columns. """
     text_cols = TEXT_COLUMNS.copy()
@@ -285,6 +328,7 @@ def clean_text_columns(df, *extra_cols):
         if col in df.columns:
             df[f"{col}_clean"] = (df[col].astype("string").apply(clean_text).astype("string"))
     return df
+
 
 def clean_doi_and_url(df):
     """
@@ -301,6 +345,7 @@ def clean_doi_and_url(df):
             doi_url = "https://doi.org/" + df["doi"]
             df["url"] = (df["url"].astype("string").fillna(doi_url))
     return df
+
 
 def clean_issn(df):
     if "issn" in df.columns:
@@ -326,6 +371,7 @@ def artisticandcreativeproducts(df, outcome_type):
     df = convert_to_string(df)
     return df
 
+
 def collaborations(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -339,6 +385,7 @@ def collaborations(df, outcome_type):
     df = convert_to_string(df, "parent_org", "child_org", "pi_contribution",
                         "partner_contribution")
     return df
+
 
 def disseminations(df, outcome_type):
     df = clean_df(df)
@@ -355,6 +402,7 @@ def disseminations(df, outcome_type):
     df = convert_to_string(df, "results", "year")
     return df
 
+
 def furtherfundings(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -370,6 +418,7 @@ def furtherfundings(df, outcome_type):
                            "further_funding_id")
     return df
 
+
 def intellectualproperties(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -383,6 +432,7 @@ def intellectualproperties(df, outcome_type):
     df = clean_text_columns(df)
     df = convert_to_string(df, "patent_id", "patent_url")
     return df
+
 
 def policyinfluences(df, outcome_type):
     df = clean_df(df)
@@ -399,6 +449,7 @@ def policyinfluences(df, outcome_type):
     df = convert_to_string(df, "influence", "guideline_title", "methods")
     return df
 
+
 def products(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -410,6 +461,7 @@ def products(df, outcome_type):
     df = clean_text_columns(df)
     df = convert_to_string(df, "clinical_trial", "clinical_trial_id")
     return df
+
 
 def publications(df, outcome_type):
     df = clean_df(df)
@@ -448,6 +500,7 @@ def publications(df, outcome_type):
                             "conference_num", "author")
     return df
 
+
 def researchdatabaseandmodels(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -459,6 +512,7 @@ def researchdatabaseandmodels(df, outcome_type):
     df = clean_text_columns(df)
     df = convert_to_string(df)
     return df
+
 
 def researchmaterials(df, outcome_type):
     df = clean_df(df)
@@ -475,6 +529,7 @@ def researchmaterials(df, outcome_type):
     df = convert_to_string(df)
     return df
 
+
 def softwareandtechnicalproducts(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
@@ -487,6 +542,7 @@ def softwareandtechnicalproducts(df, outcome_type):
     df = clean_text_columns(df)
     df = convert_to_string(df, "open_source_license")    
     return df
+
 
 def spinouts(df, outcome_type):
     df = clean_df(df)
@@ -504,6 +560,7 @@ def spinouts(df, outcome_type):
     df = convert_to_string(df, "company_name", "reg_num")
     return df
 
+
 def all_outcomes(df, outcome_type):
     df = clean_df(df)
     df = merge_url(df)
@@ -513,25 +570,7 @@ def all_outcomes(df, outcome_type):
     df["organisations"] = (df[["parentOrganisation", "childOrganisation"]]
         .astype("string").apply(lambda x: "; ".join(x.dropna()), axis=1))
     df["author_clean"] = df["author"].apply(normalise_name)
-    df = drop_columns(df, outcome_type, "providedToOthers", "journalTitle", 
-                      "pubMedId", "isbn", "issn", 
-                      "seriesNumber", "seriesTitle", "subTitle", "volumeTitle",
-                      "volumeNumber", "issue", "totalPages", "edition",
-                      "chapterNumber", "chapterTitle", "pageReference", 
-                      "conferenceEvent", "conferenceLocation", "conferenceNumber", 
-                      "parentOrganisation", "childOrganisation",
-                      "principalInvestigatorContribution", "partnerContribution",
-                      "sector", "country", "form", "primaryAudience", "results",
-                      "typeOfPresentation", "geographicReach", 
-                      "partOfOfficialScheme", "narrative", "organisation",
-                      "department", "fundingId", "amount.currencyCode", 
-                      "amount.amount", "influence", "guidelineTitle", "methods",
-                      "areas.item", "softwareDeveloped", "softwareOpenSourced",
-                      "protection", "patentId", 
-                      "licensed",  "openSourceLicense", "companyName",
-                      "companyDescription", "registrationNumber",
-                      "ipExploitated", "jointVenture", "stage", "status",
-                      "clinicalTrial", "ukcrnlsctnld")
+    df = drop_columns(df, outcome_type, *ALL_OUTCOMES_DROP_COLS)
     df = rename_columns(df)
     df = convert_to_category(df, ["type"])
     df = clean_text_columns(df)
@@ -549,6 +588,7 @@ def get_outcome_type(file):
         return match.group(1)
     return None
 
+
 def main():
     for file in INPUT_DIR.glob("gtr_*_latest.csv"):
         outcome_type = get_outcome_type(file)
@@ -560,10 +600,16 @@ def main():
             continue
         print(f"Cleaning: '{outcome_type}'")
         df = pd.read_csv(file, encoding ="utf-8")
-        df = cleaning_function(df, outcome_type)
+        try:
+            df = cleaning_function(df, outcome_type)
+        except Exception as e:
+            print(f"Failed cleaning {outcome_type}: {e}")
+            continue
         output_file = OUTPUT_DIR / f"gtr_{outcome_type}_clean.csv"
         df.to_csv(output_file, index = False, encoding = "utf-8")
-        print(f"Saved: {output_file}\n")
+        print(f"Saved: {output_file.name} "
+        f"({len(df):,} rows × {len(df.columns)} columns)\n")
     
+
 if __name__ == "__main__":
     main()
