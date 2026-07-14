@@ -4,6 +4,7 @@ import numpy as np
 import html
 import re
 import unicodedata
+from nameparser import HumanName
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -59,7 +60,11 @@ REPLACEMENTS = {
     "Â": "",
 }
 
-COLS_TO_DROP = ["href", "outcome_type", "ext", "outcomeid", "created", 
+EMPTY_TEXT_VALUES = {"nil", "null", "none", "n/a", "na", "not available",
+                     "not applicable", "no abstract", "abstract not available", 
+                     "abstract to follow", "to follow", "unknown", "-"}
+
+COLS_TO_DROP = ["href", "gtr_outcome_type", "ext", "outcomeid", "created", 
                 "updated", "links.link"]
 
 RENAME_MAP = {"supportingUrl": "url"}
@@ -79,27 +84,25 @@ def csv_to_df(outcome_type):
     return pd.read_csv(input_file)
 
 def clean_text(text):
-    """
-    Clean scraped text while preserving meaningful structure such as
-    headings and bullet points.
-    """
     if pd.isna(text):
         return np.nan
     # Decode HTML entities
     text = html.unescape(text)
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Remove Markdown formatting
-    text = text.replace("**", "")
-    # Normalise line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Convert common bullet symbols to "-"
-    text = re.sub(r"[•●▪◦]", "-", text)
     # Fix encoding artefacts
     for wrong, correct in REPLACEMENTS.items():
         text = text.replace(wrong, correct)
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Remove Markdown formatting
+    text = re.sub(r"[*_`#]+", "", text)
+    # Convert common bullet symbols to "-"
+    text = re.sub(r"[•●▪◦]", "-", text)
+    # Remove decorative formatting
+    text = re.sub(r"%{3,}", " ", text)
     # Remove URLs
     text = re.sub(r"https?://\S+|www\.\S+", "", text)
+    # Remove emails
+    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
     # Normalise whitespace
     text = " ".join(text.split())
     # Convert empty, punctuation-only, or symbol-only values to missing
@@ -108,6 +111,36 @@ def clean_text(text):
         for char in text):
         return np.nan
     return text
+
+def extract_related_article(text):
+    if pd.isna(text):
+        return np.nan
+    matches = re.findall(
+        r"Related Article:\s*(.*?)(?=\nRelated Article:|$)",
+        text, flags=re.DOTALL)
+    if matches:
+        return " | ".join(matches)
+    return np.nan
+
+
+def normalise_name(name):
+    if pd.isna(name):
+        return pd.NA
+    name = str(name).strip()
+    # Remove commas and full stops
+    name = re.sub(r"[,.]", "", name)
+    # Collapse whitespace
+    name = " ".join(name.split())
+    parts = name.split()
+    # Already looks like surname and initials
+    if len(parts) >= 2 and all(len(p) <= 2 for p in parts[1:]):
+        return name
+    # Only parse obvious full names
+    if len(parts) == 2:
+        parsed = HumanName(name)
+        if parsed.first and parsed.last:
+            return f"{parsed.last} {parsed.first[0]}"
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -222,19 +255,6 @@ def clean_issn(df):
         df["issn"] = df["issn"].str.replace(r"^(\d{4})(\d{3}[\dXx])$",
                                             r"\1-\2", regex=True)
     return df
-
-def normalise_name(name):
-    if pd.isna(name):
-        return pd.NA
-    name = str(name)
-    # Remove punctuation
-    name = re.sub(r"[,.]", "", name)
-    # Remove extra whitespace
-    name = " ".join(name.split())
-    # Remove accents for matching
-    name = unicodedata.normalize("NFKD", name)
-    name = "".join(c for c in name if not unicodedata.combining(c))
-    return name.strip()
 
 
 # ---------------------------------------------------------------------------
