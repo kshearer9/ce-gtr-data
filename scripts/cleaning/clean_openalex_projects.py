@@ -86,7 +86,6 @@ def main():
     df.to_csv(output_file, index = False, encoding = "utf-8")
     print(f"Saved: {output_file.name} "
     f"({len(df):,} rows × {len(df.columns)} columns)\n") 
-    print(df.info())   
 
 
 if __name__ == "__main__":
