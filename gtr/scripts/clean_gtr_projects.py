@@ -84,26 +84,28 @@ def clean_text(value):
     original = text
     # Decode HTML entities
     text = html.unescape(text)
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Remove Markdown formatting
-    text = text.replace("**", "")
-    # Normalise line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Convert common bullet symbols to "-"
-    text = re.sub(r"[•●▪◦]", "-", text)
     # Fix encoding artefacts
     for wrong, correct in REPLACEMENTS.items():
         text = text.replace(wrong, correct)
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Remove Markdown formatting
+    text = re.sub(r"[*_`#]+", "", text)
+    # Convert common bullet symbols to "-"
+    text = re.sub(r"[•●▪◦]", "-", text)
+    # Remove decorative formatting
+    text = re.sub(r"%{3,}", " ", text)
     # Remove URLs
     text = re.sub(r"https?://\S+|www\.\S+", "", text)
-    # Normalise whitespace
-    text = " ".join(text.split())
+    # Remove emails
+    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
     # Convert empty, punctuation-only, or symbol-only values to missing
     if text == "" or all(
         unicodedata.category(char)[0] in {"P", "S"} or char.isspace()
         for char in text):
-        return np.nan
+        return np.nan, False
     return text, text != original
 
 
