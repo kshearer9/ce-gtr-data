@@ -452,7 +452,7 @@ def extract_work_metadata(w):
 
     return {
         "title": w.get("title"),
-        "outcome_type": w.get("type"),
+        "type": w.get("type"),
         "publication_date": w.get("publication_date"),
         "authors": authors,
         "institutions": institutions,
@@ -492,7 +492,6 @@ def main():
             "Could not find either gtr_projects_clean.csv or gtr_projects_latest.csv")
 
     df = pd.read_csv(input_file, encoding="utf-8")
-    df = pd.read_csv(INPUT_DIR / "gtr_projects_clean.csv", encoding = "utf-8")
 
     if args.test_limit:
         df = df.head(args.test_limit)
@@ -605,6 +604,7 @@ def main():
 
     # Save outcomes
     out = pd.DataFrame(results)
+    out = out.drop_duplicates(subset=["project_id", "openalex_url"])
     out.to_csv(DATA_DIR / f"openalex_outcomes_{timestamp}.csv", index=False, encoding="utf-8")
     out.to_csv(DATA_DIR / "openalex_outcomes_latest.csv", index=False, encoding="utf-8")
 
