@@ -397,6 +397,41 @@ def reconstruct_abstract(inverted_index):
     # Rebuild OpenAlex inverted-index abstracts into readable text
     return " ".join(word_positions[i] for i in sorted(word_positions.keys()))
 
+
+def extract_work_url(w):
+    """
+    Returns the best available URL for an OpenAlex work.
+
+    Priority:
+    1. DOI
+    2. Landing page URL
+    3. PDF URL
+    4. None if no URL exists
+    """
+    # 1. DOI
+    if w.get("doi"):
+        return w["doi"]
+    # 2. Landing page URL
+    for loc in w.get("locations", []):
+        if loc.get("landing_page_url"):
+            return loc["landing_page_url"]
+    # 3. PDF URL
+    for loc in w.get("locations", []):
+        if loc.get("pdf_url"):
+            return loc["pdf_url"]
+    # Nothing found
+    return None
+
+def extract_doi(w):
+    """
+    Extract DOI without the https://doi.org/ prefix.
+    """
+    doi = w.get("doi")
+    if not doi:
+        return None
+    return doi.replace("https://doi.org/", "")
+
+
 def extract_work_metadata(w):
     """
     Extracts and standardises metadata fields from OpenAlex works.
@@ -416,7 +451,7 @@ def extract_work_metadata(w):
     abstract = reconstruct_abstract(w.get("abstract_inverted_index"))
 
     return {
-        "outcome_title": w.get("title"),
+        "title": w.get("title"),
         "outcome_type": w.get("type"),
         "publication_date": w.get("publication_date"),
         "authors": authors,
@@ -428,8 +463,9 @@ def extract_work_metadata(w):
         "domain": domain,
         "field": field,
         "subfield": subfield,
-        "doi": w.get("doi"),
-        "openalex_url": w.get("id"),
+        "url": extract_work_url(w),
+        "doi": extract_doi(w),
+        "openalex_url": w.get("id")
     }
 
 # ---------------------------------------------------------------------------
