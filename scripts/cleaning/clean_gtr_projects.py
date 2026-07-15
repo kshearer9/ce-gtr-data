@@ -1,10 +1,6 @@
 import pandas as pd
-import html
-import re
 from pathlib import Path
-import numpy as np
-import unicodedata
-from utils.constants import REPLACEMENTS
+from utils.cleaning import TEXT_TO_REPLACE
 from utils.cleaning import (normalise_name, convert_to_string, convert_to_date,
                             clean_text_columns, convert_to_category, 
                             convert_to_numeric)
@@ -57,25 +53,6 @@ COLS_TO_DROP = ["funding_data_available",
                 "tier1_matches",
                 "tier2_matches",
                 "tier3_matches"]
-
-
-TEXT_TO_REPLACE = {
-    r"(?i)^\s*$": np.nan,
-    r"(?i)^nil$": np.nan,
-    r"(?i)^null$": np.nan,
-    r"(?i)^none$": np.nan,
-    r"(?i)^n/?a\.?$": np.nan,
-    r"(?i)^n\.?a\.?$": np.nan,
-    r"(?i)^abstract to follow$": np.nan,
-    r"(?i)^abstracts are not currently available in gtr.*$": np.nan,
-    r"(?i)^awaiting public project summary$": np.nan,
-    r"(?i)^tbc$": np.nan,
-    r"(?i)^no public description$": np.nan,
-    r"(?i)^abstract\s*": "",
-    r"(?i)^not available$": np.nan,
-    r"(?i)^not provided$": np.nan,
-    r"(?i)^not applicable$": np.nan,
-}
 
 # ---------------------------------------------------------------------------
 # CLEANING
