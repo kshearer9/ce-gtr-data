@@ -1,6 +1,6 @@
 from pathlib import Path
 import pandas as pd
-from utils.cleaning import TEXT_TO_REPLACE
+from utils.constants import TEXT_TO_REPLACE
 from utils.cleaning import (normalise_name, convert_to_string, 
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
