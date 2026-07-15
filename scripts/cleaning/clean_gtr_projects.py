@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 import unicodedata
 from utils.constants import REPLACEMENTS
-from utils.cleaning import normalise_name
+from utils.cleaning import (normalise_name, convert_to_string, convert_to_date,
+                            clean_text_columns, convert_to_category, 
+                            convert_to_numeric)
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -19,66 +21,78 @@ OUTPUT_DIR = ROOT_DIR / "data" / "cleaned"
 for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-INPUT_FILE = INPUT_DIR / "gtr_projects_latest.csv"
-OUTPUT_FILE = OUTPUT_DIR / "gtr_projects_clean.csv"
-
 # ---------------------------------------------------------------------------
 # COLUMNS TO CLEAN
 # ---------------------------------------------------------------------------
 
-TEXT_COLUMNS = ["title", "abstract_text", 
-                "tech_abstract_text", "potential_impact"]
+TEXT_COLS = ["title", 
+             "abstract_text", 
+             "tech_abstract_text", 
+             "potential_impact"]
+
+STRING_COLS = ["project_id",
+               "lead_organisation",
+               "participant_organisations",
+               "principal_investigator",
+               "sectors",
+               "fund_start",
+               "fund_end",
+               "grant_reference",
+               "discipline_primary",
+               "research_subjects",
+               "research_topics"
+               "gtr_url"]
+
+CATEGORY_COLS = ["lead_funder",
+                 "status",
+                 "grant_category",
+                 "discipline_source"]
+
+NUMERIC_COLS = ["value_pounds"]
+
+COLS_TO_DROP = ["funding_data_available",
+                "n_research_subjects",
+                "matched_search_term",
+                "filter_decision",
+                "tier1_matches",
+                "tier2_matches",
+                "tier3_matches"]
+
+
+TEXT_TO_REPLACE = {
+    r"(?i)^\s*$": np.nan,
+    r"(?i)^nil$": np.nan,
+    r"(?i)^null$": np.nan,
+    r"(?i)^none$": np.nan,
+    r"(?i)^n/?a\.?$": np.nan,
+    r"(?i)^n\.?a\.?$": np.nan,
+    r"(?i)^abstract to follow$": np.nan,
+    r"(?i)^abstracts are not currently available in gtr.*$": np.nan,
+    r"(?i)^awaiting public project summary$": np.nan,
+    r"(?i)^tbc$": np.nan,
+    r"(?i)^no public description$": np.nan,
+    r"(?i)^abstract\s*": "",
+    r"(?i)^not available$": np.nan,
+    r"(?i)^not provided$": np.nan,
+    r"(?i)^not applicable$": np.nan,
+}
 
 # ---------------------------------------------------------------------------
 # CLEANING
 # ---------------------------------------------------------------------------
 
-
-def clean_text(value):
-    """
-    Clean scraped text while preserving meaningful structure such as
-    headings and bullet points.
-    """
-    if pd.isna(value):
-        return np.nan, False
-    text = str(value)
-    original = text
-    # Decode HTML entities
-    text = html.unescape(text)
-    # Fix encoding artefacts
-    for wrong, correct in REPLACEMENTS.items():
-        text = text.replace(wrong, correct)
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Remove Markdown formatting
-    text = re.sub(r"[*_`#]+", "", text)
-    # Convert common bullet symbols to "-"
-    text = re.sub(r"[•●▪◦]", "-", text)
-    # Remove decorative formatting
-    text = re.sub(r"%{3,}", " ", text)
-    # Remove URLs
-    text = re.sub(r"https?://\S+|www\.\S+", "", text)
-    # Remove emails
-    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
-    # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-    # Convert empty, punctuation-only, or symbol-only values to missing
-    if text == "" or all(
-        unicodedata.category(char)[0] in {"P", "S"} or char.isspace()
-        for char in text):
-        return np.nan, False
-    return text, text != original
-
-
-def normalise_title(text):
-    """Creates a simplified version of a title for comparison purposes."""
-    if pd.isna(text):
-        return text
-    text = text.lower()
-    text = re.sub(r"[–—-]", " ", text)
-    text = re.sub(r"[^\w\s]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def clean_df(df):
+    # Remove duplicate outcomes
+    if "project_id" in df.columns:
+        before = len(df)
+        df = df.drop_duplicates("project_id")
+        removed = before - len(df)
+        if removed:
+            print(f"  Removed {removed} duplicate outcomes")
+    # Replace missing abstracts with nan
+    df = df.replace(TEXT_TO_REPLACE, regex=True)
+    df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -86,16 +100,22 @@ def normalise_title(text):
 # ---------------------------------------------------------------------------
 
 def main():
-    df = pd.read_csv(INPUT_FILE, encoding="utf-8")
-    modified_cells = 0
-    for col in TEXT_COLUMNS:
-        cleaned_values = []
-        for value in df[col]:
-            cleaned, changed = clean_text(value)
-            cleaned_values.append(cleaned)
-            if changed:
-                modified_cells += 1
-        df[col] = cleaned_values
+    processed_file = INPUT_DIR / "gtr_projects_latest.csv"
+    if processed_file.exists():
+        input_file = processed_file
+    else:
+        raise FileNotFoundError(
+            "Could not find gtr_projects_latest.csv")
+            
+    df = pd.read_csv(input_file, encoding="utf-8")
+    df = clean_df(df)
+    df = clean_text_columns(df, *TEXT_COLS)
+    df = convert_to_numeric(df, *NUMERIC_COLS)
+    df = convert_to_category(df, *CATEGORY_COLS)
+    df = convert_to_string(df, *STRING_COLS)
+    df = df.drop(columns=COLS_TO_DROP, errors="ignore")
+    if "principal_investigator" in df.columns:
+        df["pi_clean"] = df["principal_investigator"].apply(normalise_name)
 
     # Missing value reporting
     print("\nMissing Values")
@@ -109,27 +129,18 @@ def main():
     print("\nDuplicate Checks")
     print("-" * 40)
     if "project_id" in df.columns:
-        id_duplicates = df["project_id"].duplicated().sum()
-        print("Duplicate project_id :", id_duplicates)
-        # Remove projects with duplicate project id
-        if id_duplicates > 0:
-            df = df.drop_duplicates(subset="project_id", keep="first")
-            print("Removed projects with duplicate project ID's.")
+        print("Duplicate project id :", df["project_id"].duplicated().sum())
     if "title" in df.columns:
         print("Duplicate title :", df["title"].duplicated().sum())
-    if "title" in df.columns:
-        df["title_clean"] = df["title"].apply(normalise_title)
-    if "principal_investigator" in df.columns:
-        df["pi_clean"] = df["principal_investigator"].apply(normalise_name)
 
-    df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
+    output_file = OUTPUT_DIR / "gtr_projects_clean.csv"
+    df.to_csv(output_file, index=False, encoding="utf-8")
 
     print("\n" + "=" * 40)
     print("GTR data cleaning completed.")
-    print(f"Modified cells : {modified_cells}")
     print(f"Rows           : {len(df)}")
     print(f"Columns        : {len(df.columns)}")
-    print(f"Saved          : {OUTPUT_FILE}")
+    print(f"Saved          : {output_file.name}")
     print("=" * 40)
 
 
