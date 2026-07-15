@@ -475,8 +475,12 @@ def main():
             continue
         output_file = OUTPUT_DIR / f"gtr_{outcome_type}_clean.csv"
         df.to_csv(output_file, index = False, encoding = "utf-8")
-        print(f"Saved: {output_file.name} "
-        f"({len(df):,} rows × {len(df.columns)} columns)\n")
+
+        print("=" * 40)
+        print(f"Rows           : {len(df)}")
+        print(f"Columns        : {len(df.columns)}")
+        print(f"Saved          : {output_file.name}")
+        print("=" * 40 + "\n") 
     
 
 if __name__ == "__main__":
