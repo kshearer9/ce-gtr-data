@@ -63,6 +63,6 @@ python3 -m scripts.cleaning.clean_openalex_outcomes
 Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 
 ```bash
-python3 -m scripts.cleaning.merge_datasets.py
+python3 -m scripts.cleaning.merge_datasets
 ```
 After completing all steps, cleaned and merged datasets will be available in the `data/cleaned/merged` directory and individual outcome types for OpenAlex including extra metadata are available in 'data/cleaned/outcomes'.
