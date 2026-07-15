@@ -92,7 +92,7 @@ def main():
     df = convert_to_string(df, *STRING_COLS)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     if "principal_investigator" in df.columns:
-        df["pi_clean"] = df["principal_investigator"].apply(normalise_name)
+        df["principal_investigator_clean"] = df["principal_investigator"].apply(normalise_name)
 
     # Missing value reporting
     print("\nMissing Values")
