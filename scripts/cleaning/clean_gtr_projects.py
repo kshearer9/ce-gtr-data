@@ -1,6 +1,6 @@
 import pandas as pd
 from pathlib import Path
-from utils.cleaning import TEXT_TO_REPLACE
+from utils.constants import TEXT_TO_REPLACE
 from utils.cleaning import (normalise_name, convert_to_string, convert_to_date,
                             clean_text_columns, convert_to_category, 
                             convert_to_numeric)
@@ -52,7 +52,8 @@ COLS_TO_DROP = ["funding_data_available",
                 "filter_decision",
                 "tier1_matches",
                 "tier2_matches",
-                "tier3_matches"]
+                "tier3_matches",
+                "sectors"]
 
 # ---------------------------------------------------------------------------
 # CLEANING
