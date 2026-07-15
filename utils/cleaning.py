@@ -41,7 +41,7 @@ def clean_text(text):
     text = re.sub(r"<[^>]+>", "", text)
     # Remove Markdown formatting
     text = re.sub(r"[*_`#]+", "", text)
-    # Convert common bullet symbols to "-"
+    # Convert common bullet symbols to "-" - may change this
     text = re.sub(r"[•●▪◦]", "-", text)
     # Remove decorative formatting
     text = re.sub(r"%{3,}", " ", text)
@@ -58,9 +58,9 @@ def clean_text(text):
         return np.nan
     return text
 
-def convert_to_string(df, *string_cols):
+def convert_to_string(df, *cols):
     """ Converts columns to string type. """
-    for col in string_cols:
+    for col in cols:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
     return df
