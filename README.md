@@ -7,7 +7,7 @@ Run the following scripts in order from the project root directory. Each step ge
 Collects the latest UKRI GtR project metadata.
 
 ```bash
-python3 -m scripts.collection.collect_gtr_projects --outcomes
+python3 -m scripts.collection.collect_gtr_projects --outcomes --sectors
 ```
 
 ### 2. Collect UKRI Gateway to Research (GtR) Outcomes
@@ -58,4 +58,11 @@ Cleans and standardises OpenAlex research output metadata.
 python3 -m scripts.cleaning.clean_openalex_outcomes
 ```
 
-After completing all steps, cleaned datasets will be available in the `data/cleaned/` directory.
+### 8. Merge project and outcome datasets
+
+Merges UKRI and OpenAlex projects and outcomes into one dataset each.
+
+```bash
+python3 -m scripts.cleaning.merge_datasets.py
+```
+After completing all steps, cleaned and merged datasets will be available in the `data/cleaned/merged` directory and individual outcome types for OpenAlex including extra metadata are available in 'data/cleaned/outcomes'.
