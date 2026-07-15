@@ -1,3 +1,5 @@
+import numpy as np
+
 REPLACEMENTS = {
 
     # Common mojibake
@@ -33,6 +35,24 @@ REPLACEMENTS = {
     # Extra encoding artefacts
     "\xa0": " ",
     "Â": "",
+}
+
+TEXT_TO_REPLACE = {
+    r"(?i)^\s*$": np.nan,
+    r"(?i)^nil$": np.nan,
+    r"(?i)^null$": np.nan,
+    r"(?i)^none$": np.nan,
+    r"(?i)^n/?a\.?$": np.nan,
+    r"(?i)^n\.?a\.?$": np.nan,
+    r"(?i)^abstract to follow$": np.nan,
+    r"(?i)^abstracts are not currently available in gtr.*$": np.nan,
+    r"(?i)^awaiting public project summary$": np.nan,
+    r"(?i)^tbc$": np.nan,
+    r"(?i)^no public description$": np.nan,
+    r"(?i)^abstract\s*": "",
+    r"(?i)^not available$": np.nan,
+    r"(?i)^not provided$": np.nan,
+    r"(?i)^not applicable$": np.nan,
 }
 
 TRUE_VALUES = {"true", "t", "yes", "y", "1", "1.0"}
