@@ -1,5 +1,6 @@
 from pathlib import Path
 import pandas as pd
+from utils.cleaning import TEXT_TO_REPLACE
 from utils.cleaning import (normalise_name, convert_to_string, 
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
@@ -46,6 +47,19 @@ CATEGORY_COLUMNS = [
     "subfield"
 ]
 
+def clean_df(df):
+    # Remove duplicate outcomes
+    if "project_id" in df.columns:
+        before = len(df)
+        df = df.drop_duplicates("project_id")
+        removed = before - len(df)
+        if removed:
+            print(f"  Removed {removed} duplicate outcomes")
+    # Replace missing abstracts with nan
+    df = df.replace(TEXT_TO_REPLACE, regex=True)
+    df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+    return df
+
 def clean_authors(authors):
     """
     Normalise semicolon-separated author names.
@@ -76,6 +90,7 @@ def main():
             "Could not find openalex_projects_latest.csv")
     
     df = pd.read_csv(input_file, encoding="utf-8")
+    df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)

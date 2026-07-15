@@ -14,16 +14,12 @@ Exported Outputs:
 - gtr_{outcome_type}_clean.csv - cleaned dataset for each GtR outcome type
 """
 
-import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__). resolve().parents[2]))
 import pandas as pd
 import numpy as np
-import html
 import re
-import unicodedata
-from utils.constants import TRUE_VALUES, FALSE_VALUES
-from utils.cleaning import normalise_name, clean_text
+from utils.cleaning import (normalise_name, clean_text, convert_to_numeric,
+                            convert_to_category, convert_to_date, convert_to_bool)
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -77,16 +73,29 @@ ALL_OUTCOMES_DROP_COLS = ["providedToOthers", "journalTitle", "pubMedId",
 # ---------------------------------------------------------------------------
 
 
-def merge_url(df):
+def clean_doi_and_url(df):
     """
-    Create a single URL column.
+    Clean DOI identifiers and create a single URL column while keeping DOI.
     """
+    # Extract DOI identifier from DOI URLs or plain DOI strings
+    if "doi" in df.columns:
+        df["doi"] = (df["doi"].astype("string").str.extract(
+            r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", expand=False))
+
+    # Create URL column
     df["url"] = np.nan
-    url_cols = ["supportingUrl", "publicationUrl", "doi", "website", "patentUrl"]
+    url_cols = ["supportingUrl", "publicationUrl", "website", "patentUrl"]
     for col in url_cols:
         if col in df.columns:
             df["url"] = df["url"].fillna(df[col])
-    df = df.drop(columns = url_cols, errors="ignore")
+
+    # Use cleaned DOI to fill missing URLs
+    if "doi" in df.columns:
+        doi_url = "https://doi.org/" + df["doi"]
+        df["url"] = df["url"].fillna(doi_url)
+
+    # Remove source URL columns, but keep DOI
+    df = df.drop(columns=url_cols, errors="ignore")
     return df
 
 
@@ -191,48 +200,6 @@ def convert_to_string(df, *extra_cols):
     return df
 
 
-def convert_to_numeric(df, cols):
-    for col in cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
-
-def convert_to_category(df, cols):
-    for col in cols:
-        if col in df.columns:
-            df[col] = df[col].astype("category")
-    return df
-
-
-def convert_to_date(df, columns):
-    """
-    Convert Unix timestamps in milliseconds to pandas datetime format.
-    """
-    for col in columns:
-        if col in df.columns:
-            df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
-    return df
-
-
-def convert_to_bool(df, cols):
-    """
-    Convert columns to boolean type.
-    Handles existing booleans and common text/numeric representations.
-    """
-    for col in cols:
-        if col in df.columns:
-            # Already boolean - leave as is
-            if df[col].dtype == "bool":
-                continue
-            # Convert strings to lowercase for matching
-            values = df[col].astype("string").str.strip().str.lower()
-            df[col] = values.map(lambda x: True if x in TRUE_VALUES
-                                 else False if x in FALSE_VALUES 
-                                 else pd.NA).astype("boolean")
-    return df
-
-
 def clean_text_columns(df, *extra_cols):
     """ Cleans all text columns. """
     text_cols = TEXT_COLUMNS.copy()
@@ -240,23 +207,6 @@ def clean_text_columns(df, *extra_cols):
     for col in text_cols:
         if col in df.columns:
             df[f"{col}_clean"] = (df[col].astype("string").apply(clean_text).astype("string"))
-    return df
-
-
-def clean_doi_and_url(df):
-    """
-    Extract DOI identifier and fill missing publication URLs using DOI links.
-    """
-    if "doi" in df.columns:
-        # Extract DOI from either a full DOI URL or plain DOI
-        df["doi"] = (df["doi"].astype("string")
-                     .str.extract(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", 
-                                  expand=False))
-    if "url" in df.columns:
-        # Fill missing publication URLs with DOI URLs
-        if "doi" in df.columns:
-            doi_url = "https://doi.org/" + df["doi"]
-            df["url"] = (df["url"].astype("string").fillna(doi_url))
     return df
 
 
@@ -278,8 +228,8 @@ def artisticandcreativeproducts(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
     df = rename_columns(df, {"yearFirstProvided": "year"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_category(df, ["type"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_category(df, "type")
     df = clean_text_columns(df)
     df = convert_to_string(df)
     return df
@@ -292,8 +242,8 @@ def collaborations(df, outcome_type):
                             "childOrganisation": "child_org",
                             "principalInvestigatorContribution": "pi_contribution",
                             "partnerContribution": "partner_contribution",})
-    df = convert_to_date(df, ["start", "end"])
-    df = convert_to_category(df, ["sector", "country"])
+    df = convert_to_date(df, "start", "end")
+    df = convert_to_category(df, "sector", "country")
     df = clean_text_columns(df)
     df = convert_to_string(df, "parent_org", "child_org", "pi_contribution",
                         "partner_contribution")
@@ -308,9 +258,9 @@ def disseminations(df, outcome_type):
                              "typeOfPresentation": "presentation_type",
                              "geographicReach": "geographic_reach",
                              "partOfOfficialScheme": "part_of_official_scheme"})
-    df = convert_to_category(df, ["form", "primary_audience", "presentation_type", 
-                              "geographic_reach"])
-    df = convert_to_bool(df, ["part_of_official_scheme"])
+    df = convert_to_category(df, "form", "primary_audience", "presentation_type", 
+                              "geographic_reach")
+    df = convert_to_bool(df, "part_of_official_scheme")
     df = clean_text_columns(df)
     df = convert_to_string(df, "results", "year")
     return df
@@ -322,10 +272,10 @@ def furtherfundings(df, outcome_type):
     df = rename_columns(df, {"fundingId": "further_funding_id",
                              "amount.currencyCode": "currency_code",
                              "amount.amount": "amount"})
-    df = convert_to_numeric(df, ["amount"])
-    df = convert_to_date(df, ["start", "end"])
-    df = convert_to_category(df, ["organisation", "department", "sector", 
-                                  "country", "currency_code"])
+    df = convert_to_numeric(df, "amount")
+    df = convert_to_date(df, "start", "end")
+    df = convert_to_category(df, "organisation", "department", "sector", 
+                                  "country", "currency_code")
     df = clean_text_columns(df)
     df = convert_to_string(df, "narrative", "organisation", "department", 
                            "further_funding_id")
@@ -338,10 +288,10 @@ def intellectualproperties(df, outcome_type):
     df = rename_columns(df, {"patentId": "patent_id",
                              "yearProtectionGranted": "year",
                              "patentUrl": "patent_url"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_date(df, ["start", "end"])
-    df = convert_to_category(df, ["protection", "type"])
-    df = convert_to_bool(df, ["licensed"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_date(df, "start", "end")
+    df = convert_to_category(df, "protection", "type")
+    df = convert_to_bool(df, "licensed")
     df = clean_text_columns(df)
     df = convert_to_string(df, "patent_id", "patent_url")
     return df
@@ -353,8 +303,8 @@ def policyinfluences(df, outcome_type):
     df = rename_columns(df, {"guidelineTitle": "guideline_title",
                              "geographicReach": "geographic_reach",
                              "patentUrl": "patent_url"})
-    df = convert_to_category(df, ["type", "geographic_reach"])
-    df = convert_to_bool(df, ["licensed"])
+    df = convert_to_category(df, "type", "geographic_reach")
+    df = convert_to_bool(df, "licensed")
     if "area.item" in df.columns:
         df["policy_areas"] = df["area.item"].apply(
             lambda x: "; ".join(x) if isinstance(x, list) else x)
@@ -369,8 +319,8 @@ def products(df, outcome_type):
     df = rename_columns(df, {"clinicalTrial": "clinical_trial",
                              "ukcrnIsctnId": "clinical_trial_id",
                              "yearDevelopmentCompleted": "year"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_category(df, ["type", "stage", "status"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_category(df, "type", "stage", "status")
     df = clean_text_columns(df)
     df = convert_to_string(df, "clinical_trial", "clinical_trial_id")
     return df
@@ -400,9 +350,9 @@ def publications(df, outcome_type):
     df = clean_doi_and_url(df)
     df = clean_issn(df)
     df["author_clean"] = df["author"].apply(normalise_name)
-    df = convert_to_numeric(df, ["total_pages"])
-    df = convert_to_date(df, ["date_published"])
-    df = convert_to_category(df, ["type", "journal_title"])
+    df = convert_to_numeric(df, "total_pages")
+    df = convert_to_date(df, "date_published")
+    df = convert_to_category(df, "type", "journal_title")
     df = clean_text_columns(df, "abstract", "other_info", "series_title",
                             "sub_title", "volume_title", "chapter_title")
     df = convert_to_string(df, "abstract", "other_info", "series_title",
@@ -419,9 +369,9 @@ def researchdatabaseandmodels(df, outcome_type):
     df = drop_columns(df, outcome_type)
     df = rename_columns(df, {"providedToOthers": "provided_to_others",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_category(df, ["type"])
-    df = convert_to_bool(df, ["provided_to_others"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_category(df, "type")
+    df = convert_to_bool(df, "provided_to_others")
     df = clean_text_columns(df)
     df = convert_to_string(df)
     return df
@@ -434,10 +384,10 @@ def researchmaterials(df, outcome_type):
                              "softwareOpenSourced": "software_open_sourced",
                              "providedToOthers": "provided_to_others",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_category(df, ["type"])
-    df = convert_to_bool(df, ["provided_to_others", "software_developed",
-                              "software_open_sourced"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_category(df, "type")
+    df = convert_to_bool(df, "provided_to_others", "software_developed",
+                              "software_open_sourced")
     df = clean_text_columns(df)
     df = convert_to_string(df)
     return df
@@ -449,9 +399,9 @@ def softwareandtechnicalproducts(df, outcome_type):
     df = rename_columns(df, {"softwareOpenSourced": "software_open_sourced",
                              "openSourceLicense": "open_source_license",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_category(df, ["type"])
-    df = convert_to_bool(df, ["software_open_sourced"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_category(df, "type")
+    df = convert_to_bool(df, "software_open_sourced")
     df = clean_text_columns(df)
     df = convert_to_string(df, "open_source_license")    
     return df
@@ -467,8 +417,8 @@ def spinouts(df, outcome_type):
                              "yearEstablished": "year",
                              "ipExploited": "ip_exploited",
                              "jointVenture": "joint_venture"})
-    df = convert_to_numeric(df, ["year"])
-    df = convert_to_bool(df, ["ip_exploited", "joint_venture"])
+    df = convert_to_numeric(df, "year")
+    df = convert_to_bool(df, "ip_exploited", "joint_venture")
     df = clean_text_columns(df, "company_description")
     df = convert_to_string(df, "company_name", "reg_num")
     return df
@@ -476,8 +426,8 @@ def spinouts(df, outcome_type):
 
 def all_outcomes(df, outcome_type):
     df = clean_df(df)
-    df = merge_url(df)
-    df = convert_to_date(df, ["datePublished", "start", "end"])
+    df = clean_doi_and_url(df)
+    df = convert_to_date(df, "datePublished", "start", "end")
     df = merge_date(df)
     df["type"] = df["type"].fillna(df["form"])
     df["organisations"] = (df[["parentOrganisation", "childOrganisation"]]
@@ -485,7 +435,7 @@ def all_outcomes(df, outcome_type):
     df["author_clean"] = df["author"].apply(normalise_name)
     df = drop_columns(df, outcome_type, *ALL_OUTCOMES_DROP_COLS)
     df = rename_columns(df)
-    df = convert_to_category(df, ["type"])
+    df = convert_to_category(df, "type")
     df = clean_text_columns(df)
     df = convert_to_string(df, "year", "author", "organisations")
     return df
@@ -520,8 +470,12 @@ def main():
             continue
         output_file = OUTPUT_DIR / f"gtr_{outcome_type}_clean.csv"
         df.to_csv(output_file, index = False, encoding = "utf-8")
-        print(f"Saved: {output_file.name} "
-        f"({len(df):,} rows × {len(df.columns)} columns)\n")
+
+        print("=" * 40)
+        print(f"Rows           : {len(df)}")
+        print(f"Columns        : {len(df.columns)}")
+        print(f"Saved          : {output_file.name}")
+        print("=" * 40 + "\n") 
     
 
 if __name__ == "__main__":
