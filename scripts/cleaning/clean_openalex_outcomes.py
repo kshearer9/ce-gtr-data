@@ -89,8 +89,13 @@ def main():
     df["authors_clean"] = df["authors"].apply(clean_authors)
     output_file = OUTPUT_DIR / "openalex_all_outcomes_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")
-    print(f"Saved: {output_file.name} "
-    f"({len(df):,} rows × {len(df.columns)} columns)\n")    
+
+    print("OpenAlex outcome data cleaning completed.")
+    print("\n" + "=" * 40)
+    print(f"Rows           : {len(df)}")
+    print(f"Columns        : {len(df.columns)}")
+    print(f"Saved          : {output_file.name}")
+    print("=" * 40)  
 
 
 if __name__ == "__main__":
