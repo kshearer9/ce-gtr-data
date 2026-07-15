@@ -18,7 +18,6 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 import re
-from utils.constants import TRUE_VALUES, FALSE_VALUES
 from utils.cleaning import (normalise_name, clean_text, convert_to_numeric,
                             convert_to_category, convert_to_date, convert_to_bool)
 
@@ -74,16 +73,29 @@ ALL_OUTCOMES_DROP_COLS = ["providedToOthers", "journalTitle", "pubMedId",
 # ---------------------------------------------------------------------------
 
 
-def merge_url(df):
+def clean_doi_and_url(df):
     """
-    Create a single URL column.
+    Clean DOI identifiers and create a single URL column while keeping DOI.
     """
+    # Extract DOI identifier from DOI URLs or plain DOI strings
+    if "doi" in df.columns:
+        df["doi"] = (df["doi"].astype("string").str.extract(
+            r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", expand=False))
+
+    # Create URL column
     df["url"] = np.nan
-    url_cols = ["supportingUrl", "publicationUrl", "doi", "website", "patentUrl"]
+    url_cols = ["supportingUrl", "publicationUrl", "website", "patentUrl"]
     for col in url_cols:
         if col in df.columns:
             df["url"] = df["url"].fillna(df[col])
-    df = df.drop(columns = url_cols, errors="ignore")
+
+    # Use cleaned DOI to fill missing URLs
+    if "doi" in df.columns:
+        doi_url = "https://doi.org/" + df["doi"]
+        df["url"] = df["url"].fillna(doi_url)
+
+    # Remove source URL columns, but keep DOI
+    df = df.drop(columns=url_cols, errors="ignore")
     return df
 
 
@@ -195,23 +207,6 @@ def clean_text_columns(df, *extra_cols):
     for col in text_cols:
         if col in df.columns:
             df[f"{col}_clean"] = (df[col].astype("string").apply(clean_text).astype("string"))
-    return df
-
-
-def clean_doi_and_url(df):
-    """
-    Extract DOI identifier and fill missing publication URLs using DOI links.
-    """
-    if "doi" in df.columns:
-        # Extract DOI from either a full DOI URL or plain DOI
-        df["doi"] = (df["doi"].astype("string")
-                     .str.extract(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", 
-                                  expand=False))
-    if "url" in df.columns:
-        # Fill missing publication URLs with DOI URLs
-        if "doi" in df.columns:
-            doi_url = "https://doi.org/" + df["doi"]
-            df["url"] = (df["url"].astype("string").fillna(doi_url))
     return df
 
 
@@ -431,7 +426,7 @@ def spinouts(df, outcome_type):
 
 def all_outcomes(df, outcome_type):
     df = clean_df(df)
-    df = merge_url(df)
+    df = clean_doi_and_url(df)
     df = convert_to_date(df, "datePublished", "start", "end")
     df = merge_date(df)
     df["type"] = df["type"].fillna(df["form"])
