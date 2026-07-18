@@ -1,19 +1,3 @@
-"""
-Search UKRI Circular Economy projects in Scopus.
-
-Current pipeline:
-- Load UKRI project dataset
-- Search Scopus using either:
-    * grant reference (default)
-    * project title
-- Save every returned Scopus record
-- Cache search responses
-- Export raw search results
-
-This script deliberately DOES NOT try to decide whether a paper
-belongs to a project. It simply records what Scopus returns.
-"""
-
 import argparse
 import json
 import sqlite3
@@ -22,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 from tqdm import tqdm
+import datetime
 
 # ---------------------------------------------------------------------------
 # PATHS
@@ -144,7 +129,7 @@ KEEP_COLUMNS = {
     # Authors
     "abstracts-retrieval-response.authors.author": "authors",
 
-    "abstracts-retrieval-response.affiliation": "affiliations",
+    "abstracts-retrieval-response.affiliation": "institutions",
 
     # Subject classifications
     "abstracts-retrieval-response.subject-areas.subject-area":
@@ -177,22 +162,55 @@ KEEP_COLUMNS = {
 # API
 # ---------------------------------------------------------------------------
 
-def safe_get(url, params):
-    for attempt in range(3):
+def safe_get(url, params=None, headers=HEADERS, timeout=15, retries=5, 
+             backoff=0.8, session=None):
+    if session is None:
+        session = requests.Session()
+
+    for attempt in range(1, retries + 1):
         try:
-            r = requests.get(
-                url,
-                headers=HEADERS,
-                params=params,
-                timeout=20)
-            if r.status_code != 200:
-                print(r.text)
-                r.raise_for_status()
-            time.sleep(0.3)
+            r = session.get(url, params=params, headers=headers,timeout=timeout)
+            status = r.status_code
+
+            # Rate limit
+            if status == 429:
+                retry_after = r.headers.get("Retry-After")
+                wait = (
+                    float(retry_after)
+                    if retry_after
+                    else backoff * (2 ** (attempt - 1))
+                )
+                print(f"[429] Rate limited. " 
+                      f"Waiting {wait:.1f}s")
+                time.sleep(wait)
+                continue
+
+            # Temporary server errors
+            if status >= 500:
+                wait = backoff * (2 ** (attempt - 1))
+                print(f"[{status}] Server error. "
+                      f"Retrying in {wait:.1f}s")
+                time.sleep(wait)
+                continue
+
+            # Permanent client errors
+            if 400 <= status < 500:
+                return None
+            r.raise_for_status()
             return r
-        except Exception as e:
-            print(e)
-            time.sleep(2)
+
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            wait = backoff * (2 ** (attempt - 1))
+            print(f"[Connection issue] "
+                f"Retry {attempt}/{retries}")
+            time.sleep(wait)
+
+        except requests.RequestException as e:
+            wait = backoff * (2 ** (attempt - 1))
+            print(f"[Request error] "
+                f"Retry {attempt}/{retries}")
+            time.sleep(wait)
     return None
 
 
@@ -201,7 +219,7 @@ def safe_get(url, params):
 # ---------------------------------------------------------------------------
 
 
-def search_scopus(query):
+def search_scopus(query, session):
     cache_key = f"{SEARCH_PREFIX}{query}"
     cached = get_cache(cache_key, expected_type="search")
     if cached is not None:
@@ -210,7 +228,7 @@ def search_scopus(query):
     url = "https://api.elsevier.com/content/search/scopus"
     params = {"query": query, "count": 25}
 
-    r = safe_get(url, params)
+    r = safe_get(url, params=params, session=session)
     if r is None:
         return []
     
@@ -232,18 +250,133 @@ def build_project_query(grant_reference):
 # QUERY BUILDERS
 # ---------------------------------------------------------------------------
 
-def retrieve_record(eid):
+def retrieve_record(eid, session):
     cache_key = f"{RECORD_PREFIX}{eid}"
     cached = get_cache(cache_key)
     if cached is not None:
         return cached
     url = f"https://api.elsevier.com/content/abstract/eid/{eid}"
-    r = safe_get(url, {"view": "FULL"})
+    r = safe_get(url, session = session, params={"view": "FULL"})
     if r is None:
         return None
     data = r.json()
     save_cache(cache_key, data, "record")
     return data
+
+def parse_authors(authors):
+    if not isinstance(authors, list):
+        return {"authors": None}
+    
+    names = []
+    for author in authors:
+        if not isinstance(author, dict):
+            continue
+        name = (author.get("ce:indexed-name") or author.get("ce:surname"))
+        if name:
+            names.append(name)
+    return {"authors": "; ".join(names)}
+
+
+def parse_institutions(institutions, eid=None, scopus_id=None, doi=None, project_id=None):
+    """
+    Returns institution names as a semicolon-separated string.
+    Also saves a separate scopus_institutions.csv table.
+    """
+    if not isinstance(institutions, list):
+        if isinstance(institutions, dict):
+            institutions = [institutions]
+        else:
+            return {"institutions": None,
+                    "institution_rows": []}
+
+    aff_names = []
+    institution_rows = []
+    for org in institutions:
+        if not isinstance(org, dict):
+            continue
+        institution = org.get("affilname")
+        if institution:
+            aff_names.append(institution)
+        institution_rows.append({
+            "project_id": project_id,
+            "scopus_id": scopus_id,
+            "eid": eid,
+            "doi": doi,
+            "institution": institution,
+            "city": org.get("affiliation-city"),
+            "country": org.get("affiliation-country"),
+            "institution_id": org.get("@id")
+        })
+
+    return {"institutions": "; ".join(sorted(set(aff_names)))
+            if aff_names else None,
+            "institution_rows": institution_rows}
+
+
+def parse_subject_areas(subject_areas):
+    if not isinstance(subject_areas, list):
+        return {"subject_areas": None}
+    
+    subjects = []
+    for item in subject_areas:
+        if not isinstance(item, dict):
+            continue
+        subject = item.get("$")
+        if subject:
+            subjects.append(subject)
+    return {"subject_areas": "; ".join(subjects)}
+
+
+def parse_keywords(indexed_keywords):
+    if not isinstance(indexed_keywords, list):
+        return {"keywords": None}
+    
+    keywords = []
+    for item in indexed_keywords:
+        if not isinstance(item, dict):
+            continue
+        keyword = item.get("$")
+        if keyword:
+            keywords.append(keyword)
+    return {"keywords": "; ".join(keywords)}
+
+
+def clean_df(df, timestamp):
+    df["scopus_id"] = df["scopus_id"].str.replace("SCOPUS_ID:", "", regex=False)
+    if "authors" in df.columns:
+        author_data = (df["authors"].apply(parse_authors).apply(pd.Series))
+        df = pd.concat([df.drop(columns=["authors"]), author_data], axis=1)
+
+    institution_rows = []
+    if "institutions" in df.columns:
+        parsed_aff = (df.apply(
+            lambda row: parse_institutions(row["institutions"],
+                                           eid=row["eid"],
+                                           scopus_id=row["scopus_id"],
+                                           doi=row["doi"], 
+                                           project_id=row["project_id"]), axis=1))
+        df["institutions"] = parsed_aff.apply(lambda x: x["institutions"])
+        for x in parsed_aff:
+            institution_rows.extend(x["institution_rows"])
+
+    if institution_rows:
+        pd.DataFrame(institution_rows).to_csv(
+            PROC_DIR / f"scopus_outcomes_institutions_{timestamp}.csv",
+            index=False, encoding="utf-8")
+        pd.DataFrame(institution_rows).to_csv(
+            PROC_DIR / "scopus_outcomes_institutions_latest.csv",
+            index=False, encoding="utf-8")
+        
+    if "subject_areas" in df.columns:
+        subject_data = (df["subject_areas"].apply(parse_subject_areas)
+                        .apply(pd.Series))
+        df = pd.concat([df.drop(columns=["subject_areas"]), subject_data], axis=1)
+
+    if "indexed_keywords" in df.columns:
+        keyword_data = (df["indexed_keywords"].apply(parse_keywords)
+                        .apply(pd.Series))
+        df = pd.concat([df.drop(columns=["indexed_keywords"]), keyword_data], axis=1)
+    return df
 
 def save_references(df):
     citations = []
@@ -302,6 +435,7 @@ def save_references(df):
             citations.append({
                 # citing paper
                 "citing_project_id": row.get("project_id"),
+                "citing_scopus_id": row.get("scopus_id"),
                 "citing_grant_reference": row.get("grant_reference"),
                 "citing_eid": row.get(
                     "abstracts-retrieval-response.coredata.eid"),
@@ -332,20 +466,38 @@ def main():
                         help="Extract and save outcome references.")
     args = parser.parse_args()
 
-    df = pd.read_csv(INPUT_DIR / "gtr_projects_latest.csv", encoding="utf-8")
+    # Load GtR project data
+    cleaned_file = INPUT_DIR / "gtr_projects_clean.csv"
+    processed_file = ROOT_DIR / "data" / "processed" / "gtr" / "gtr_projects_latest.csv"
+    # If data has not been cleaned yet, use data from processed folder
+    if cleaned_file.exists():
+        input_file = cleaned_file
+        print("Using cleaned GtR projects dataset.")
+    elif processed_file.exists():
+        input_file = processed_file
+        print("Cleaned dataset not found. Using processed GtR projects dataset.")
+    else:
+        raise FileNotFoundError(
+            "Could not find either gtr_projects_clean.csv or gtr_projects_latest.csv")
+
+    df = pd.read_csv(input_file, encoding="utf-8")
+
     if args.test_limit:
         df = df.head(args.test_limit)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session = requests.Session()
 
     rows = []
     for row in tqdm(df.itertuples(index=False), total=len(df)):
         query = build_project_query(row.grant_reference)
-        records = search_scopus(query)
+        records = search_scopus(query, session)
         for record in records:
             eid = record.get("eid")
             if not eid:
                 continue
 
-            full_record = retrieve_record(eid)
+            full_record = retrieve_record(eid, session)
             if full_record:
                 flat = pd.json_normalize(full_record, sep=".")
                 result = flat.iloc[0].to_dict()
@@ -362,17 +514,21 @@ def main():
 
         cols = [c for c in KEEP_COLUMNS if c in raw_out.columns]
         proc_out = raw_out[cols].rename(columns=KEEP_COLUMNS)
-        proc_out.to_csv(PROC_DIR / "scopus_outcomes.csv", index=False, encoding="utf-8")
+        proc_out = clean_df(proc_out, timestamp)
+        proc_out.to_csv(PROC_DIR / f"scopus_outcomes_{timestamp}.csv", index=False, encoding="utf-8")
+        proc_out.to_csv(PROC_DIR / "scopus_outcomes_latest.csv", index=False, encoding="utf-8")
 
         print(f"\nSaved {len(proc_out)} search results.")
 
-    if args.save_references:
-        refs = save_references(raw_out)
-        if refs:
-            refs_out = pd.DataFrame(refs)
-            refs_out.to_csv(PROC_DIR / "scopus_outcomes_references.csv", 
-                            index=False, encoding="utf-8")
-            print(f"\nSaved {len(refs_out)} corresponding references.")
+        if args.save_references:
+            refs = save_references(raw_out)
+            if refs:
+                refs_out = pd.DataFrame(refs)
+                refs_out.to_csv(PROC_DIR / f"scopus_outcomes_references_{timestamp}.csv", 
+                                index=False, encoding="utf-8")
+                refs_out.to_csv(PROC_DIR / "scopus_outcomes_references_latest.csv", 
+                                index=False, encoding="utf-8")
+                print(f"\nSaved {len(refs_out)} corresponding references.")
 
     conn.close()
 
