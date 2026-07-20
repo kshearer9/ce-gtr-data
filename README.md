@@ -1,3 +1,35 @@
+## Setup
+
+### API keys
+
+This project requires API keys for external services. 
+
+1. Create API keys:
+* Scopus API - https://dev.elsevier.com
+* OpenAlex API - https://developers.openalex.org
+* Web of Science Expanded API - https://developer.clarivate.com/apis/wos
+
+2. Create a `.env` file in the project root:
+
+```bash
+touch .env
+```
+
+3. Add your API keys to `.env`:
+
+```bash
+SCOPUS_API_KEY=your_scopus_api_key
+OPENALEX_API_KEY=your_openalex_api_key
+WOS_API_KEY=your_web_of_science_api_key
+```
+
+3. Install the required environment variable package:
+
+```bash
+pip install python-dotenv
+```
+
+The `.env` file is excluded from version control using `.gitignore`. Each user should create their own local `.env` file containing their API keys.
 ## Running the Data Pipeline
 
 Run the following scripts in order from the project root directory. Each step generates the data required for the following stage.
