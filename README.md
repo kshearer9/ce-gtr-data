@@ -2,7 +2,7 @@
 
 ### API keys
 
-This project requires API keys for external services. 
+This project requires API keys for external services. The `.env` file is excluded from version control using `.gitignore`. Each user should create their own local `.env` file containing their API keys.
 
 1. Create API keys:
 * Scopus API - https://dev.elsevier.com
@@ -29,7 +29,6 @@ WOS_API_KEY=your_web_of_science_api_key
 pip install python-dotenv
 ```
 
-The `.env` file is excluded from version control using `.gitignore`. Each user should create their own local `.env` file containing their API keys.
 ## Running the Data Pipeline
 
 Run the following scripts in order from the project root directory. Each step generates the data required for the following stage.
