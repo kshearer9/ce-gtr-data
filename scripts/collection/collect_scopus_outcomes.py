@@ -4,16 +4,16 @@ Scopus API.
 
 Pipeline:
     1. Builds a Scopus search query from the project grant reference.
-    2. Searches Scopus for matching publications.
-    3. Retrieves the full metadata for each publication.
-    4. Extracts publication, author, institution and subject metadata.
+    2. Searches Scopus for matching outcomes.
+    3. Retrieves the full metadata for each outcome.
+    4. Extracts outcome, author, institution and subject metadata.
     5. Saves raw API responses and processed datasets.
     6. Optionally extracts cited references into a separate table.
 
 Exported Outputs:
-- scopus_outcomes_latest.csv - Publication metadata for Scopus records linked to UKRI projects.
-- scopus_outcomes_institutions_latest.csv - Author affiliation institutions associated with each matched publication.
-- Optional: scopus_outcomes_references_latest.csv - Bibliographic metadata for references cited by each matched publication.
+- scopus_outcomes_latest.csv - Outcome metadata for Scopus records linked to UKRI projects.
+- scopus_outcomes_institutions_latest.csv - Author affiliation institutions associated with each matched outcome.
+- Optional: scopus_outcomes_references_latest.csv - Bibliographic metadata for references cited by each matched outcome.
 """
 
 import argparse
@@ -118,19 +118,20 @@ def save_cache(query, response, cache_type):
 # FIELD MAPPING
 # ---------------------------------------------------------------------------
 
+# Map nested Scopus JSON fields to simplified output column names
 KEEP_COLUMNS = {
-    # Your project
+    # Project identifiers
     "project_id": "project_id",
     "project_title": "project_title",
     "grant_reference": "grant_reference",
 
-    # Core publication metadata
+    # Core pulication metadata
     "abstracts-retrieval-response.coredata.dc:title": "title",
     "abstracts-retrieval-response.coredata.dc:description": "abstract",
     "abstracts-retrieval-response.coredata.prism:doi": "doi",
     "abstracts-retrieval-response.coredata.eid": "eid",
     "abstracts-retrieval-response.coredata.dc:identifier": "scopus_id",
-
+    "abstracts-retrieval-response.coredata.pubmed-id": "pubmed_id",
     "abstracts-retrieval-response.coredata.prism:publicationName": "journal",
     "abstracts-retrieval-response.coredata.prism:coverDate": "publication_date",
     "abstracts-retrieval-response.coredata.prism:volume": "volume",
@@ -138,46 +139,31 @@ KEEP_COLUMNS = {
     "abstracts-retrieval-response.coredata.prism:startingPage": "start_page",
     "abstracts-retrieval-response.coredata.prism:endingPage": "end_page",
     "abstracts-retrieval-response.coredata.prism:pageRange": "page_range",
-
     "abstracts-retrieval-response.coredata.subtypeDescription": "publication_type",
     "abstracts-retrieval-response.coredata.prism:aggregationType": "aggregation_type",
-
     "abstracts-retrieval-response.coredata.citedby-count": "citation_count",
-
     "abstracts-retrieval-response.coredata.openaccess": "open_access",
     "abstracts-retrieval-response.coredata.openaccessFlag": "open_access_flag",
-
     "abstracts-retrieval-response.coredata.prism:url": "scopus_url",
 
-    # Authors
+    # Authors and institutions
     "abstracts-retrieval-response.authors.author": "authors",
-
     "abstracts-retrieval-response.affiliation": "institutions",
 
     # Subject classifications
     "abstracts-retrieval-response.subject-areas.subject-area":
         "subject_areas",
-
     "abstracts-retrieval-response.idxterms.mainterm":
         "indexed_keywords",
 
     # Journal metadata
-    "abstracts-retrieval-response.coredata.prism:issn":
-        "issn",
-
-    "abstracts-retrieval-response.coredata.dc:publisher":
-        "publisher",
-
-    "abstracts-retrieval-response.coredata.source-id":
-        "source_id",
-
-    # Other identifiers
-    "abstracts-retrieval-response.coredata.pubmed-id":
-        "pubmed_id",
+    "abstracts-retrieval-response.coredata.prism:issn": "issn",
+    "abstracts-retrieval-response.coredata.dc:publisher": "publisher",
+    "abstracts-retrieval-response.coredata.source-id": "source_id",
 
     # Reference count
     "abstracts-retrieval-response.item.bibrecord.tail.bibliography.@refcount":
-        "reference_count",
+        "reference_count"
 }
 
 
@@ -249,6 +235,7 @@ def build_project_query(grant_reference):
 
 def search_scopus(query, session):
     cache_key = f"{SEARCH_PREFIX}{query}"
+    # Return cached search results when available
     cached = get_cache(cache_key, expected_type="search")
     if cached is not None:
         return cached
@@ -270,9 +257,11 @@ def search_scopus(query, session):
 
 def retrieve_record(eid, session):
     cache_key = f"{RECORD_PREFIX}{eid}"
+    # Return cached search results when available
     cached = get_cache(cache_key)
     if cached is not None:
         return cached
+    # Retrieve the full outcome record for a Scopus EID
     url = f"https://api.elsevier.com/content/abstract/eid/{eid}"
     r = safe_get(url, session = session, params={"view": "FULL"})
     if r is None:
@@ -369,11 +358,15 @@ def parse_keywords(indexed_keywords):
 # ---------------------------------------------------------------------------
 
 def clean_df(df, timestamp):
+    # Standardise Scopus identifier format
     df["scopus_id"] = df["scopus_id"].str.replace("SCOPUS_ID:", "", regex=False)
+
+    # Flatten nested author information
     if "authors" in df.columns:
         author_data = (df["authors"].apply(parse_authors).apply(pd.Series))
         df = pd.concat([df.drop(columns=["authors"]), author_data], axis=1)
 
+    # Extract affiliations into a semicolon-separated column and institutions lookup table
     institution_rows = []
     if "institutions" in df.columns:
         parsed_aff = (df.apply(
@@ -394,11 +387,13 @@ def clean_df(df, timestamp):
             PROC_DIR / "scopus_outcomes_institutions_latest.csv",
             index=False, encoding="utf-8")
         
+    # Flatten subject area information
     if "subject_areas" in df.columns:
         subject_data = (df["subject_areas"].apply(parse_subject_areas)
                         .apply(pd.Series))
         df = pd.concat([df.drop(columns=["subject_areas"]), subject_data], axis=1)
 
+    # Flatten indexed keywords
     if "indexed_keywords" in df.columns:
         keyword_data = (df["indexed_keywords"].apply(parse_keywords)
                         .apply(pd.Series))
@@ -406,6 +401,9 @@ def clean_df(df, timestamp):
     return df
 
 def save_references(df):
+    """
+    Extract cited reference metadata from each outcome into a 
+    outcome-reference table."""
     citations = []
     reference_col = (
         "abstracts-retrieval-response.item.bibrecord.tail.bibliography.reference")
@@ -515,6 +513,7 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session = requests.Session()
 
+    # Search scopus for outcomes
     rows = []
     for row in tqdm(df.itertuples(index=False), total=len(df)):
         query = build_project_query(row.grant_reference)

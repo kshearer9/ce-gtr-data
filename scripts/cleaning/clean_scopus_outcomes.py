@@ -1,3 +1,18 @@
+"""
+Clean processed Scopus outcome datasets.
+
+The script:
+    1. Cleans outcome metadata extracted from the Scopus API.
+    2. Standardises data types and text fields.
+    3. Removes duplicate outcomes.
+    4. Produces cleaned outcome, institution and reference datasets.
+
+Exported outputs:
+    - scopus_all_outcomes_clean.csv – Cleaned outcome metadata.
+    - scopus_institutions_clean.csv – Cleaned institution affiliation data.
+    - scopus_references_clean.csv – Cleaned cited reference data.
+"""
+
 from pathlib import Path
 import pandas as pd
 from utils.cleaning import (normalise_name, convert_to_string, 
@@ -6,7 +21,7 @@ from utils.cleaning import (normalise_name, convert_to_string,
 from utils.constants import TEXT_TO_REPLACE
 
 # ---------------------------------------------------------------------------
-# FILE SETUP
+# FILE PATHS
 # ---------------------------------------------------------------------------
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,6 +32,10 @@ OUTPUT_DIR = ROOT_DIR / "data" / "cleaned" / "outcomes"
 for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
+
+# ---------------------------------------------------------------------------
+# CLEANING CONFIG
+# ---------------------------------------------------------------------------
 
 STRING_COLUMNS = [
     "project_id",
@@ -68,6 +87,11 @@ COLS_TO_DROP = [
     "page_range"
 ]
 
+
+# ---------------------------------------------------------------------------
+# CLEANING FUNCTIONS
+# ---------------------------------------------------------------------------
+
 def clean_authors(authors):
     """
     Normalise semicolon-separated author names.
@@ -86,7 +110,7 @@ def clean_authors(authors):
 
 def clean_df(df):
     removed_dupes = pd.DataFrame
-    # Remove duplicate outcomes
+    # Remove duplicate project-outcome matches
     if {"project_id", "scopus_id"}.issubset(df.columns):
         before = len(df)
         # Keep the duplicates that will be removed
@@ -96,8 +120,9 @@ def clean_df(df):
         removed = before - len(df)
         if removed:
             print(f"  Removed {removed} duplicate outcomes")
-    # Replace missing abstracts with nan
+    # Replace placeholder text with NaN
     df = df.replace(TEXT_TO_REPLACE, regex=True)
+    # Remove leading/trailing whitespace
     df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
     return df, removed_dupes
 
@@ -177,7 +202,7 @@ def main():
                                    "citing_eid", "citing_doi", "cited_doi", "cited_source",
                                    "cited_authors", "reference_text")
         df = df.dropna(axis=1, how="all")
-        ref_output_file = OUTPUT_DIR / "scopus_institutions_clean.csv"
+        ref_output_file = OUTPUT_DIR / "scopus_references_clean.csv"
         ref_df.to_csv(ref_output_file, index = False, encoding = "utf-8")
 
         print("Scopus outcome references data cleaning completed.")
