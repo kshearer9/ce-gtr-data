@@ -1,3 +1,21 @@
+"""
+Retrieve publication outcomes for UKRI Gateway to Research projects using the
+Scopus API.
+
+Pipeline:
+    1. Builds a Scopus search query from the project grant reference.
+    2. Searches Scopus for matching publications.
+    3. Retrieves the full metadata for each publication.
+    4. Extracts publication, author, institution and subject metadata.
+    5. Saves raw API responses and processed datasets.
+    6. Optionally extracts cited references into a separate table.
+
+Exported Outputs:
+- scopus_outcomes_latest.csv - Publication metadata for Scopus records linked to UKRI projects.
+- scopus_outcomes_institutions_latest.csv - Author affiliation institutions associated with each matched publication.
+- Optional: scopus_outcomes_references_latest.csv - Bibliographic metadata for references cited by each matched publication.
+"""
+
 import argparse
 import json
 import sqlite3
@@ -6,27 +24,28 @@ from pathlib import Path
 import pandas as pd
 import requests
 from tqdm import tqdm
-import datetime
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
-# PATHS
+# FILE PATHS
 # ---------------------------------------------------------------------------
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT_DIR / "data" 
 
-INPUT_DIR = DATA_DIR / "processed" / "gtr"
+CLEAN_INPUT_DIR = DATA_DIR / "cleaned"
+PROC_INPUT_DIR = DATA_DIR / "processed" / "gtr"
 
 RAW_DIR = DATA_DIR / "raw"
 PROC_DIR = DATA_DIR / "processed" / "scopus"
 
 CACHE_DIR = ROOT_DIR / "cache"
 
-for d in (INPUT_DIR, RAW_DIR, PROC_DIR, CACHE_DIR):
+for d in (CLEAN_INPUT_DIR, PROC_INPUT_DIR, RAW_DIR, PROC_DIR, CACHE_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# API
+# API CONFIG
 # ---------------------------------------------------------------------------
 
 API_KEY = "f5b9f62fba19244ad19f2f614a3863b5"
@@ -39,7 +58,7 @@ HEADERS = {
 
 
 # ---------------------------------------------------------------------------
-# CACHE
+# CACHE SETUP
 # ---------------------------------------------------------------------------
 
 CACHE_DB = CACHE_DIR / "scopus_cache.db"
@@ -94,6 +113,10 @@ def save_cache(query, response, cache_type):
     )
     conn.commit()
 
+
+# ---------------------------------------------------------------------------
+# FIELD MAPPING
+# ---------------------------------------------------------------------------
 
 KEEP_COLUMNS = {
     # Your project
@@ -159,7 +182,7 @@ KEEP_COLUMNS = {
 
 
 # ---------------------------------------------------------------------------
-# API
+# API REQUESTS
 # ---------------------------------------------------------------------------
 
 def safe_get(url, params=None, headers=HEADERS, timeout=15, retries=5, 
@@ -215,8 +238,13 @@ def safe_get(url, params=None, headers=HEADERS, timeout=15, retries=5,
 
 
 # ---------------------------------------------------------------------------
-# SEARCH
+# SCOPUS SEARCH
 # ---------------------------------------------------------------------------
+
+def build_project_query(grant_reference):
+    if not grant_reference:
+        return None
+    return f'FUND-NO("{grant_reference.replace("/", "\\/")}")'
 
 
 def search_scopus(query, session):
@@ -240,16 +268,6 @@ def search_scopus(query, session):
     save_cache(cache_key, entries, "search")
     return entries
 
-def build_project_query(grant_reference):
-    if not grant_reference:
-        return None
-    return f'FUND-NO("{grant_reference.replace("/", "\\/")}")'
-
-
-# ---------------------------------------------------------------------------
-# QUERY BUILDERS
-# ---------------------------------------------------------------------------
-
 def retrieve_record(eid, session):
     cache_key = f"{RECORD_PREFIX}{eid}"
     cached = get_cache(cache_key)
@@ -262,6 +280,11 @@ def retrieve_record(eid, session):
     data = r.json()
     save_cache(cache_key, data, "record")
     return data
+
+
+# ---------------------------------------------------------------------------
+# RECORD PARSING
+# ---------------------------------------------------------------------------
 
 def parse_authors(authors):
     if not isinstance(authors, list):
@@ -340,6 +363,10 @@ def parse_keywords(indexed_keywords):
             keywords.append(keyword)
     return {"keywords": "; ".join(keywords)}
 
+
+# ---------------------------------------------------------------------------
+# OUTPUT GENERATION
+# ---------------------------------------------------------------------------
 
 def clean_df(df, timestamp):
     df["scopus_id"] = df["scopus_id"].str.replace("SCOPUS_ID:", "", regex=False)
@@ -467,8 +494,8 @@ def main():
     args = parser.parse_args()
 
     # Load GtR project data
-    cleaned_file = INPUT_DIR / "gtr_projects_clean.csv"
-    processed_file = ROOT_DIR / "data" / "processed" / "gtr" / "gtr_projects_latest.csv"
+    cleaned_file = CLEAN_INPUT_DIR / "gtr_projects_clean.csv"
+    processed_file = PROC_INPUT_DIR / "gtr_projects_latest.csv"
     # If data has not been cleaned yet, use data from processed folder
     if cleaned_file.exists():
         input_file = cleaned_file

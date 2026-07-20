@@ -176,6 +176,7 @@ def main():
         ref_df = convert_to_string(ref_df, "citing_project_id", "citing_grant_reference", 
                                    "citing_eid", "citing_doi", "cited_doi", "cited_source",
                                    "cited_authors", "reference_text")
+        df = df.dropna(axis=1, how="all")
         ref_output_file = OUTPUT_DIR / "scopus_institutions_clean.csv"
         ref_df.to_csv(ref_output_file, index = False, encoding = "utf-8")
 
