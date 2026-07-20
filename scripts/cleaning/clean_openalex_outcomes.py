@@ -3,6 +3,7 @@ import pandas as pd
 from utils.cleaning import (normalise_name, convert_to_string, 
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
+from utils.constants import TEXT_TO_REPLACE
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -67,6 +68,19 @@ def clean_authors(authors):
             cleaned.append(normalised)
     return "; ".join(cleaned) if cleaned else pd.NA
 
+def clean_df(df):
+    # Remove duplicate outcomes
+    if {"project_id", "doi"}.issubset(df.columns):
+        before = len(df)
+        df = df.drop_duplicates(subset=["project_id", "doi"])
+        removed = before - len(df)
+        if removed:
+            print(f"  Removed {removed} duplicate outcomes")
+    # Replace missing abstracts with nan
+    df = df.replace(TEXT_TO_REPLACE, regex=True)
+    df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+    return df
+
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -81,6 +95,7 @@ def main():
             "Could not find openalex_outcomes_latest.csv")
     
     df = pd.read_csv(input_file, encoding="utf-8")
+    df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)
@@ -91,7 +106,7 @@ def main():
     df.to_csv(output_file, index = False, encoding = "utf-8")
 
     print("OpenAlex outcome data cleaning completed.")
-    print("\n" + "=" * 40)
+    print("=" * 40)
     print(f"Rows           : {len(df)}")
     print(f"Columns        : {len(df.columns)}")
     print(f"Saved          : {output_file.name}")

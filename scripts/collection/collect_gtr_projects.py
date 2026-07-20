@@ -45,6 +45,7 @@ Run examples:
     python collect_gtr.py --size 25 --max-pages 1            (quick test)
     python collect_gtr.py --size 25 --max-pages 1 --sectors  (test with sectors)
     python collect_gtr.py --sectors                          (full run + sectors)
+    python collect_gtr.py --outcomes                         (full run + outcome hrefs)
     python collect_gtr.py --sectors --fresh                  (ignore any checkpoint)
 """
 

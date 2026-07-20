@@ -114,8 +114,8 @@ def main():
     output_file = OUTPUT_DIR / "gtr_projects_clean.csv"
     df.to_csv(output_file, index=False, encoding="utf-8")
 
-    print("\n" + "=" * 40)
     print("GTR data cleaning completed.")
+    print("=" * 40)
     print(f"Rows           : {len(df)}")
     print(f"Columns        : {len(df.columns)}")
     print(f"Saved          : {output_file.name}")
