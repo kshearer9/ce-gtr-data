@@ -23,11 +23,6 @@ OPENALEX_API_KEY=your_openalex_api_key
 WOS_API_KEY=your_web_of_science_api_key
 ```
 
-3. Install the required environment variable package:
-
-```bash
-pip install python-dotenv
-```
 
 ## Running the Data Pipeline
 
