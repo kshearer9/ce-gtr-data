@@ -32,6 +32,8 @@ import sqlite3
 from pathlib import Path
 import re
 from datetime import datetime
+from dotenv import load_dotenv
+import os
 
 # ---------------------------------------------------------------------------
 # DIRECTORY CONFIG
@@ -51,7 +53,8 @@ for d in (DATA_DIR, CACHE_DIR):
 # API CONFIG
 # ---------------------------------------------------------------------------
 
-API_KEY = "k4XSonjxeAF7OthnZ8qfzV"
+load_dotenv()
+API_KEY = os.getenv("OPENALEX_API_KEY")
 HEADERS = {
     "User-Agent": "DurhamMDS-CE-ResearchProject/1.0 (academic use)",
     "Accept": "application/json"
