@@ -58,7 +58,23 @@ Cleans and standardises OpenAlex research output metadata.
 python3 -m scripts.cleaning.clean_openalex_outcomes
 ```
 
-### 8. Merge project and outcome datasets
+### 8. Collect Scopus Outcomes
+
+Matches UKRI projects to Scopus records and retrieves associated outcome metadata.
+
+```bash
+python3 -m scripts.collection.collect_scopus_outcomes
+```
+
+### 9. Clean Scopus Outcomes
+
+Cleans and standardises Scopus outcome metadata.
+
+```bash
+python3 -m scripts.cleaning.clean_scopus_outcomes
+```
+
+### 10. Merge project and outcome datasets
 
 Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 
