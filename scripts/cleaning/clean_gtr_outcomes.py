@@ -175,10 +175,11 @@ def clean_df(df):
 
 def drop_columns(df, outcome_type, *extra_cols):
     """ Drops unnecessary columns. """
-    drop_cols = COLS_TO_DROP.copy()
-    drop_cols.extend(extra_cols)
     if outcome_type != "all_outcomes":
-        drop_cols.append("outcome_type")
+        drop_cols = COLS_TO_DROP.copy()
+    else:
+        drop_cols = ALL_OUTCOMES_DROP_COLS
+    drop_cols.extend(extra_cols)
     return df.drop(columns=drop_cols, errors="ignore")
 
 
