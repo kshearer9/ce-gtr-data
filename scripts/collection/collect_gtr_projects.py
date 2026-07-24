@@ -627,7 +627,7 @@ def flatten_project(project, search_term):
         "lead_organisation": "",
         "participant_organisations": "",
         "principal_investigator": "",
-        "value_pounds": "",
+        "value_gbp": "",
         "funding_data_available": "",
         "sectors": "",
         # Fields available directly from the search response
@@ -676,7 +676,7 @@ def enrich_row(row, delay, session, collect_sectors, organisation_lookup, person
     # Funding value, plus a flag marking whether GtR actually holds a value
     # (studentships and some other categories carry no per-project funding).
     fund_value = fund_lookup.get(row.get("_fund_href", ""),"")
-    row["value_pounds"] = fund_value
+    row["value_gbp"] = fund_value
     row["funding_data_available"] = bool(
         fund_value and str(fund_value) not in ("", "0", "0.0"))
 
