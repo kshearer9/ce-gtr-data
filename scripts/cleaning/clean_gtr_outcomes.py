@@ -37,8 +37,7 @@ for d in (INPUT_DIR, OUTPUT_DIR):
 # CLEANING CONFIGURATION
 # ---------------------------------------------------------------------------
 
-COLS_TO_DROP = ["href", "gtr_outcome_type", "ext", "outcomeid", "created", 
-                "updated", "links.link"]
+COLS_TO_DROP = ["href", "ext", "outcomeid", "created", "updated", "links.link"]
 
 RENAME_MAP = {"supportingUrl": "url", "id": "outcome_id"}
 
@@ -175,11 +174,10 @@ def clean_df(df):
 
 def drop_columns(df, outcome_type, *extra_cols):
     """ Drops unnecessary columns. """
-    if outcome_type != "all_outcomes":
-        drop_cols = COLS_TO_DROP.copy()
-    else:
-        drop_cols = ALL_OUTCOMES_DROP_COLS
+    drop_cols = COLS_TO_DROP.copy()
     drop_cols.extend(extra_cols)
+    if outcome_type != "all_outcomes":
+        drop_cols.append("gtr_outcome_type")
     return df.drop(columns=drop_cols, errors="ignore")
 
 
