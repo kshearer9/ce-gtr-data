@@ -49,6 +49,12 @@ def clean_text(text):
     text = re.sub(r"https?://\S+|www\.\S+", "", text)
     # Remove emails
     text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", "", text)
+    # Remove Markdown reference links e.g. [text][0]
+    text = re.sub(r"\[[^\]]+\]\[\d+\]", "", text)
+    # Remove Markdown link definitions e.g. [0]: URL
+    text = re.sub(r"\[\d+\]:.*", "", text)
+    # Remove standalone markdown brackets
+    text = re.sub(r"[\[\]]", "", text)
     # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
     # Convert empty, punctuation-only, or symbol-only values to missing

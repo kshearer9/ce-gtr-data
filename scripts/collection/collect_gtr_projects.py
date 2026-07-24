@@ -61,6 +61,7 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 import sqlite3
+from utils.cleaning import convert_to_date
 
 # ---------------------------------------------------------------------------
 # DIRECTORIES
@@ -268,16 +269,6 @@ NON_OUTCOME_RELS = {
 def slugify(text):
     """Turn 'circular economy' into 'circular_economy' for safe filenames."""
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
-
-
-def ms_to_month_year(ms):
-    """Convert a GtR millisecond timestamp to 'Mon YYYY' (UTC)."""
-    if not ms:
-        return ""
-    try:
-        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%b %Y")
-    except (TypeError, ValueError):
-        return ""
 
 
 def format_with_pct(items):
@@ -636,13 +627,13 @@ def flatten_project(project, search_term):
         "lead_organisation": "",
         "participant_organisations": "",
         "principal_investigator": "",
-        "value_pounds": "",
+        "value_gbp": "",
         "funding_data_available": "",
         "sectors": "",
         # Fields available directly from the search response
         "lead_funder": lead_funder,
-        "fund_start": ms_to_month_year(fund_link.get("start")),
-        "fund_end": ms_to_month_year(fund_link.get("end")),
+        "start_date": fund_link.get("start"),
+        "end_date": fund_link.get("end"),
         "status": project.get("status", ""),
         "grant_category": project.get("grantCategory", ""),
         "grant_reference": grant_ref,
@@ -685,7 +676,7 @@ def enrich_row(row, delay, session, collect_sectors, organisation_lookup, person
     # Funding value, plus a flag marking whether GtR actually holds a value
     # (studentships and some other categories carry no per-project funding).
     fund_value = fund_lookup.get(row.get("_fund_href", ""),"")
-    row["value_pounds"] = fund_value
+    row["value_gbp"] = fund_value
     row["funding_data_available"] = bool(
         fund_value and str(fund_value) not in ("", "0", "0.0"))
 

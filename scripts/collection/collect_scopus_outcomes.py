@@ -25,6 +25,8 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 from datetime import datetime
+from dotenv import load_dotenv
+import os
 
 # ---------------------------------------------------------------------------
 # FILE PATHS
@@ -48,7 +50,9 @@ for d in (CLEAN_INPUT_DIR, PROC_INPUT_DIR, RAW_DIR, PROC_DIR, CACHE_DIR):
 # API CONFIG
 # ---------------------------------------------------------------------------
 
-API_KEY = "f5b9f62fba19244ad19f2f614a3863b5"
+load_dotenv()
+
+API_KEY = os.getenv("SCOPUS_API_KEY")
 
 HEADERS = {
     "X-ELS-APIKey": API_KEY,
