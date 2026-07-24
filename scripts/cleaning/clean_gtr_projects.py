@@ -46,6 +46,11 @@ CATEGORY_COLS = ["lead_funder",
 
 NUMERIC_COLS = ["value_pounds"]
 
+DATE_COLS = [
+    "start_date",
+    "end_date"
+]
+
 COLS_TO_DROP = ["funding_data_available",
                 "n_research_subjects",
                 "matched_search_term",
@@ -89,6 +94,7 @@ def main():
     df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLS)
     df = convert_to_numeric(df, *NUMERIC_COLS)
+    df = convert_to_date(df, *DATE_COLS)
     df = convert_to_category(df, *CATEGORY_COLS)
     df = convert_to_string(df, *STRING_COLS)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")

@@ -18,7 +18,7 @@ for d in (INPUT_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
-STRING_COLUMNS = [
+STRING_COLS = [
     "project_id",
     "project_title",
     "grant_reference",
@@ -26,19 +26,19 @@ STRING_COLUMNS = [
     "ukri_url"
 ]
 
-TEXT_COLUMNS = ["description"]
+TEXT_COLS = ["description"]
 
-NUMERIC_COLUMNS = [
+NUMERIC_COLS = [
     "funding_amount",
     "primary_topic_score"
 ]
 
-DATE_COLUMNS = [
+DATE_COLS = [
     "start_date",
     "end_date"
 ]
 
-CATEGORY_COLUMNS = [
+CATEGORY_COLS = [
     "currency",
     "funding_type",
     "primary_topic",
@@ -91,12 +91,12 @@ def main():
     
     df = pd.read_csv(input_file, encoding="utf-8")
     df = clean_df(df)
-    df = clean_text_columns(df, *TEXT_COLUMNS)
-    df = convert_to_numeric(df, *NUMERIC_COLUMNS)
-    df = convert_to_date(df, *DATE_COLUMNS)
-    df = convert_to_string(df, *STRING_COLUMNS)
+    df = clean_text_columns(df, *TEXT_COLS)
+    df = convert_to_numeric(df, *NUMERIC_COLS)
+    df = convert_to_date(df, *DATE_COLS)
+    df = convert_to_string(df, *STRING_COLS)
     df["funding_type"] = df["funding_type"].str.replace("_", " ")
-    df = convert_to_category(df, *CATEGORY_COLUMNS)
+    df = convert_to_category(df, *CATEGORY_COLS)
     output_file = OUTPUT_DIR / "openalex_projects_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")
     print(f"Saved: {output_file.name} "
