@@ -58,7 +58,9 @@ COLS_TO_DROP = ["funding_data_available",
                 "tier1_matches",
                 "tier2_matches",
                 "tier3_matches",
-                "sectors"]
+                "sectors",
+                "discipline_primary",
+                "discipline_source"]
 
 # ---------------------------------------------------------------------------
 # CLEANING

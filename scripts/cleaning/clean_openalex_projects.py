@@ -55,9 +55,16 @@ def clean_df(df):
         removed = before - len(df)
         if removed:
             print(f"  Removed {removed} duplicate outcomes")
+
     # Replace missing abstracts with nan
     df = df.replace(TEXT_TO_REPLACE, regex=True)
     df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
+    
+    # If currency only contains GBP, remove currency column and rename value
+    if "currency" in df.columns and "funding_amount" in df.columns:
+        if set(df["currency"].dropna().unique()) == {"GBP"}:
+            df = df.drop(columns=["currency"])
+            df = df.rename(columns={"funding_amount": "value_gbp"})
     return df
 
 def clean_authors(authors):
