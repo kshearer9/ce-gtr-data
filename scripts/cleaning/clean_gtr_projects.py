@@ -44,7 +44,7 @@ CATEGORY_COLS = ["lead_funder",
                  "grant_category",
                  "discipline_source"]
 
-NUMERIC_COLS = ["value_pounds"]
+NUMERIC_COLS = ["value_gbp"]
 
 DATE_COLS = [
     "start_date",
