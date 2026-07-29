@@ -21,8 +21,8 @@ Method: a two-stage protocol following systematic-review conventions (PRISMA
 
 Flow: all projects are collected and flattened first, deduplicated on
 project_id, then screened. Only unique, kept projects are enriched (lead org,
-participant orgs, PI, funding value, and - with --sectors - impact sectors from
-outcome records), so we never spend API calls on duplicates or dropped projects.
+participant orgs, funding value), so we never spend API calls on duplicates or
+dropped projects.
 
 Resuming: enrichment is the slow phase, so for long runs it is checkpointed.
 The screened set is saved once, then enriched rows are written to a checkpoint
@@ -35,17 +35,21 @@ Outputs (in ./data/):
   raw/        -> raw JSON for each search term (written incrementally, kept for
                  reproducibility)
   processed/  -> three CSVs:
-    1. gtr_projects_<timestamp>.csv          (kept projects)
-    2. gtr_all_with_decision_<timestamp>.csv (all projects + filter decision)
+    1. gtr_projects_<timestamp>.csv          (kept projects, MASTER_COLS only)
+    2. gtr_all_with_decision_<timestamp>.csv (all projects + full screening audit)
     3. gtr_validation_sample_<timestamp>.csv    (hand-coding sample)
   checkpoints/ -> resume state (screened set + enriched-so-far); safe to delete
                   once a run has finished cleanly.
 
+The master file (output 1) carries only the analysis-ready columns in
+MASTER_COLS. The full screening audit trail (filter decision, tier matches,
+matched search term) and the longer text fields are kept in the audit file
+(output 2) and the validation sample (output 3), not in the master.
+
 Run examples:
     python collect_gtr.py --size 25 --max-pages 1            (quick test)
-    python collect_gtr.py --size 25 --max-pages 1 --sectors  (test with sectors)
-    python collect_gtr.py --sectors                          (full run + sectors)
-    python collect_gtr.py --sectors --fresh                  (ignore any checkpoint)
+    python collect_gtr.py --outcomes                         (full run + outcome hrefs)
+    python collect_gtr.py --fresh                            (ignore any checkpoint)
 """
 
 import argparse
@@ -157,6 +161,30 @@ DEFAULT_TERMS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Master output schema
+# ---------------------------------------------------------------------------
+# The simplified master file (output 1) carries only these analysis-ready
+# columns, in this order. flatten_project still produces a fuller record - the
+# screening audit trail plus the longer text fields - which is retained in the
+# audit file (output 2) and the validation sample (output 3), not the master.
+MASTER_COLS = [
+    "project_id",
+    "grant_reference",
+    "title",
+    "abstract_text",
+    "lead_funder",
+    "value_pounds",
+    "fund_start",
+    "fund_end",
+    "grant_category",
+    "status",
+    "lead_organisation",
+    "participant_organisations",
+    "research_subjects",
+    "research_topics",
+]
+
+# ---------------------------------------------------------------------------
 # Stage 2 - screening vocabulary (three tiers)
 # ---------------------------------------------------------------------------
 # Tiers are ordered by how reliably a term signals circular economy. The
@@ -227,30 +255,8 @@ TIER3_PATTERNS = [
     r"resource efficien\w*",
 ]
 
-# ---------------------------------------------------------------------------
-# Funder -> broad discipline mapping
-# ---------------------------------------------------------------------------
-FUNDER_TO_DISCIPLINE = {
-    "EPSRC": "Engineering & Physical Sciences",
-    "BBSRC": "Biological Sciences",
-    "NERC": "Environmental Sciences",
-    "ESRC": "Economic & Social Sciences",
-    "AHRC": "Arts & Humanities",
-    "MRC": "Medical Research",
-    "STFC": "Science & Technology Facilities",
-    "Innovate UK": "Industry / Applied",
-    "Horizon Europe Guarantee": "International (Horizon Europe)",
-    "ISCF": "Industrial Strategy Challenge Fund",
-    "SPF": "Strategic Priorities Fund",
-    "UKRI FLF": "Future Leaders Fellowship",
-    "ISPF": "International Science Partnerships Fund",
-    "Ayrton Fund": "International Development (Ayrton)",
-    "COVID": "COVID Response",
-    "Other NPIF": "National Productivity Investment Fund",
-}
-
 # Link rels that point to entities (people, orgs, funding) rather than
-# outcomes. Sectors live on outcome records, so we skip these when gathering.
+# outcomes; these are skipped when gathering outcome links.
 NON_OUTCOME_RELS = {
     "LEAD_ORG", "PI_PER", "FUND", "COLLAB_ORG", "PP_ORG", "FELLOW_PER",
     "CO_INV_PER", "PM_PER", "RESEARCH_PER", "STUDENT_PER", "PARTICIPANT_ORG",
@@ -484,42 +490,6 @@ def fetch_org_name(org_href, session, delay):
     return data.get("name", "")
 
 
-def fetch_person_name(person_href, session, delay):
-    """Resolve PI name from GtR person endpoint."""
-    if not person_href:
-        return ""
-    data = fetch_json(person_href, session, delay)
-    first = data.get("firstName", "") or ""
-    other = data.get("otherNames", "") or ""
-    surname = data.get("surname", "") or ""
-    return " ".join(p for p in [first, other, surname] if p).strip()
-
-
-def fetch_sectors_from_hrefs(hrefs, session, delay):
-    """Collect impact sectors from a project's outcome records.
-    Sectors are tagged on outcome records (mainly key findings), not on the
-    project record itself. Values are captured raw (GtR splits some names on
-    internal commas and has occasional source typos); normalisation happens
-    later in processing. Returns a semicolon-joined string of unique sectors."""
-    if not hrefs:
-        return ""
-    sectors = []
-    seen = set()
-    for href in hrefs:
-        if not href:
-            continue
-        data = fetch_json(href, session, delay)
-        # safely get sectors block
-        sec = data.get("sectors")
-        if isinstance(sec, dict):
-            for item in sec.get("item", []):
-                val = (item or "").strip()
-                if val and val not in seen:
-                    seen.add(val)
-                    sectors.append(val)
-    return "; ".join(sectors) if sectors else ""
-
-
 # ---------------------------------------------------------------------------
 # Per-term collection
 # ---------------------------------------------------------------------------
@@ -574,7 +544,7 @@ def flatten_project(project, search_term):
     topics = project.get("researchTopics", {}).get("researchTopic", [])
     links = project.get("links", {}).get("link", [])
 
-    fund_links, pi_links, lead_org_links, participant_org_links, key_finding_href, outcome_links = [], [], [], [], [], []
+    fund_links, lead_org_links, participant_org_links, outcome_links = [], [], [], []
 
     for lk in links:
         href = lk.get("href", "")
@@ -583,34 +553,22 @@ def flatten_project(project, search_term):
             continue
         if rel == "FUND":
             fund_links.append(lk)
-        elif rel == "PI_PER":
-            pi_links.append(lk)
         elif rel == "LEAD_ORG":
             lead_org_links.append(lk)
         elif rel == "PARTICIPANT_ORG":
             participant_org_links.append(lk)
-        elif rel == "KEY_FINDING":
-            key_finding_href.append(href)
         elif rel not in NON_OUTCOME_RELS:
             outcome_links.append(lk)
 
     fund_link = fund_links[0] if fund_links else {}
     fund_href = fund_link.get("href", "")
-    pi_href = pi_links[0].get("href", "") if pi_links else ""
     lead_org_href = lead_org_links[0].get("href", "") if lead_org_links else ""
     participant_org_href = [lk.get("href") for lk in participant_org_links]
     outcome_href = [lk.get("href") for lk in outcome_links]
 
-    # Discipline signal (no API call - uses fields already in the response)
-    subjects_with_pct = [s for s in subjects if s.get("percentage", 0) > 0]
+    # Discipline signal available directly from the search response (no API call)
     research_subjects_str = format_with_pct(subjects)
     lead_funder = project.get("leadFunder", "")
-    if subjects_with_pct:
-        discipline_primary = research_subjects_str
-        discipline_source = "research_subjects"
-    else:
-        discipline_primary = FUNDER_TO_DISCIPLINE.get(lead_funder, lead_funder)
-        discipline_source = "funder_mapping"
 
     title = project.get("title", "")
     abstract = clean_text(project.get("abstractText"))
@@ -629,28 +587,28 @@ def flatten_project(project, search_term):
     )
 
     return {
+        # ---- Master analysis columns (the MASTER_COLS subset written to the
+        #      simplified kept file) ----
         "project_id": project_id,
+        "grant_reference": grant_ref,
         "title": title,
-        # Enrichment fields - filled later by enrich_row (blank for now)
-        "lead_organisation": "",
-        "participant_organisations": "",
-        "principal_investigator": "",
-        "value_pounds": "",
-        "funding_data_available": "",
-        "sectors": "",
-        # Fields available directly from the search response
+        "abstract_text": abstract,
         "lead_funder": lead_funder,
+        # value_pounds / lead_organisation / participant_organisations are filled
+        # later by enrich_row (blank until then).
+        "value_pounds": "",
         "fund_start": ms_to_month_year(fund_link.get("start")),
         "fund_end": ms_to_month_year(fund_link.get("end")),
-        "status": project.get("status", ""),
         "grant_category": project.get("grantCategory", ""),
-        "grant_reference": grant_ref,
-        "discipline_primary": discipline_primary,
-        "discipline_source": discipline_source,
+        "status": project.get("status", ""),
+        "lead_organisation": "",
+        "participant_organisations": "",
         "research_subjects": research_subjects_str,
         "research_topics": format_with_pct(topics),
-        "n_research_subjects": len(subjects_with_pct),
-        "abstract_text": abstract,
+        # ---- Retained for the audit file (output 2) and the validation sample
+        #      (output 3) only; excluded from the master by MASTER_COLS.
+        #      tech_abstract_text and potential_impact also feed the screening
+        #      rule above; gtr_url gives hand-coders a click-through to GtR. ----
         "tech_abstract_text": tech_abstract,
         "potential_impact": potential_impact,
         "gtr_url": gtr_url,
@@ -659,13 +617,11 @@ def flatten_project(project, search_term):
         "tier1_matches": "; ".join(matches["tier1"]),
         "tier2_matches": "; ".join(matches["tier2"]),
         "tier3_matches": "; ".join(matches["tier3"]),
-        # Internal href fields (stripped before output)
+        # ---- Internal href fields (stripped before output by drop_internal) ----
         "_fund_href": fund_href,
-        "_pi_href": pi_href,
         "_lead_org_href": lead_org_href,
         "_participant_org_href": participant_org_href,
         "_outcome_href": outcome_href,
-        "_key_finding_href": key_finding_href
     }, include
 
 
@@ -674,21 +630,15 @@ def flatten_project(project, search_term):
 # Enrichment (runs after deduplication + screening, so only on unique keepers)
 # ---------------------------------------------------------------------------
 
-def enrich_row(row, delay, session, collect_sectors, organisation_lookup, person_lookup, fund_lookup,):
-    """Add fund value, PI name, organisation names, and (optionally) sectors.
+def enrich_row(row, organisation_lookup, fund_lookup):
+    """Add fund value and organisation names from the prefetched lookup tables.
     Enrichment runs after deduplication and filtering so we only make API calls
     for genuinely CE-relevant, unique projects."""
-    lead_org_name = organisation_lookup.get(row.get("_lead_org_href", ""),"")
+    lead_org_name = organisation_lookup.get(row.get("_lead_org_href", ""), "")
     row["lead_organisation"] = lead_org_name
 
-    # Funding value, plus a flag marking whether GtR actually holds a value
-    # (studentships and some other categories carry no per-project funding).
-    fund_value = fund_lookup.get(row.get("_fund_href", ""),"")
-    row["value_pounds"] = fund_value
-    row["funding_data_available"] = bool(
-        fund_value and str(fund_value) not in ("", "0", "0.0"))
-
-    row["principal_investigator"] = person_lookup.get(row.get("_pi_href", ""), "")
+    # Funding value (studentships and some categories carry no per-project value).
+    row["value_pounds"] = fund_lookup.get(row.get("_fund_href", ""), "")
 
     # Participant organisations, deduplicated against the lead org
     participant_href = row.get("_participant_org_href", []) or []
@@ -697,15 +647,10 @@ def enrich_row(row, delay, session, collect_sectors, organisation_lookup, person
     participant_set = {org.strip() for org in names if org and org.strip()}
     participant_set.discard((lead_org_name or "").strip())
     row["participant_organisations"] = "; ".join(sorted(participant_set))
-
-    # Impact sectors (opt-in via --sectors; follows outcome records)
-    if collect_sectors:
-        row["sectors"] = fetch_sectors_from_hrefs(
-            row.get("_key_finding_href", []) or [], session, delay)
     return row
 
-def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup,
-    person_lookup, fund_lookup, tqdm_enabled=False):
+def enrich_dataset(kept_df, session, delay, organisation_lookup,
+    fund_lookup, tqdm_enabled=False):
     """
     Builds lookup tables (if not provided) and enriches kept_df in one pass.
     Returns enriched DataFrame + lookup caches.
@@ -713,7 +658,6 @@ def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup
     # Collect unique URLs before enriching
     print("\nCollecting unique lookup URLs...")
     org_urls = set()
-    person_urls = set()
     fund_urls = set()
     for _, row in kept_df.iterrows():
         if row.get("_lead_org_href"):
@@ -721,12 +665,9 @@ def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup
         for href in row.get("_participant_org_href", []) or []:
             if href:
                 org_urls.add(href)
-        if row.get("_pi_href"):
-            person_urls.add(row["_pi_href"])
         if row.get("_fund_href"):
             fund_urls.add(row["_fund_href"])
     print(f"  Organisations: {len(org_urls)}")
-    print(f"  People:        {len(person_urls)}")
     print(f"  Funds:         {len(fund_urls)}")
 
     # Build lookup tables (only fetch missing entries)
@@ -737,14 +678,6 @@ def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup
     for href in iterator:
         if href not in organisation_lookup:
             organisation_lookup[href] = fetch_org_name(href, session, delay)
-    
-    if person_lookup is None:
-        person_lookup = {}
-    print("Fetching people...")
-    iterator = tqdm(person_urls, desc="People") if tqdm_enabled else person_urls
-    for href in iterator:
-        if href not in person_lookup:
-            person_lookup[href] = fetch_person_name(href, session, delay)
 
     if fund_lookup is None:
         fund_lookup = {}
@@ -761,10 +694,8 @@ def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup
     if tqdm_enabled:
         iterator = tqdm(iterator, total=len(kept_df), desc="Enriching")
     for _, row in iterator:
-        enriched_rows.append(enrich_row(row.to_dict(), delay, session,
-                                        collect_sectors, organisation_lookup,
-                                        person_lookup, fund_lookup))
-    return pd.DataFrame(enriched_rows), organisation_lookup, person_lookup, fund_lookup
+        enriched_rows.append(enrich_row(row.to_dict(), organisation_lookup, fund_lookup))
+    return pd.DataFrame(enriched_rows), organisation_lookup, fund_lookup
 
 
 # ---------------------------------------------------------------------------
@@ -803,11 +734,9 @@ def main():
                         help="Seconds between API calls (default 0.3; raise to be gentler)")
     parser.add_argument("--out-dir", type=str, default=None)
     parser.add_argument("--no-enrich", action="store_true",
-                        help="Skip fund/org/person lookups (faster, less data)")
+                        help="Skip fund/org lookups (faster, less data)")
     parser.add_argument("--no-filter", action="store_true",
                         help="Skip the CE screening (keep all matches)")
-    parser.add_argument("--sectors", action="store_true",
-                        help="Also collect impact sectors from outcomes (slow)")
     parser.add_argument("--outcomes", action="store_true", help="Also collect all outcomes")
     parser.add_argument("--validation-size", type=int, default=60)
     parser.add_argument("--checkpoint-every", type=int, default=100,
@@ -832,13 +761,11 @@ def main():
     )
     enrich = not args.no_enrich
     apply_filter = not args.no_filter
-    collect_sectors = args.sectors
     collect_outcomes = args.outcomes
 
-    # Checkpoint files are keyed to the run configuration (terms + size +
-    # sectors) so resuming only ever continues a matching run, never mixes
-    # an enrich-with-sectors run with an enrich-without one.
-    run_key = f"{'-'.join(slugify(t) for t in terms)}_s{size}_sec{int(collect_sectors)}"
+    # Checkpoint files are keyed to the run configuration (terms + size) so
+    # resuming only ever continues a matching run.
+    run_key = f"{'-'.join(slugify(t) for t in terms)}_s{size}"
     screened_ckpt = CKPT_DIR / f"screened_{run_key}.csv"
     enriched_ckpt = CKPT_DIR / f"enriched_{run_key}.jsonl"
 
@@ -855,7 +782,7 @@ def main():
     print("UKRI Gateway to Research - circular economy project collection")
     print("=" * 64)
     print(f"Terms: {len(terms)} | Page size: {size} | Delay: {args.delay}s")
-    print(f"Enrich: {enrich} | CE screening: {apply_filter} | Sectors: {collect_sectors}")
+    print(f"Enrich: {enrich} | CE screening: {apply_filter}")
     if not _HAS_TQDM:
         print("(tqdm not installed - using a simple counter; "
               "pip install tqdm for a progress bar)")
@@ -918,14 +845,11 @@ def main():
         # re-searching. (Lists are JSON-encoded to survive the CSV round-trip.)
         ckpt_df = all_df.copy()
         ckpt_df["_participant_org_href"] = ckpt_df["_participant_org_href"].apply(json.dumps)
-        ckpt_df["_key_finding_href"] = ckpt_df["_key_finding_href"].apply(json.dumps)
         ckpt_df.to_csv(screened_ckpt, index=False, encoding="utf-8")
         print(f"\n  Screened set saved to checkpoint: {screened_ckpt.name}")
 
     if "_participant_org_href" in all_df.columns:
         all_df["_participant_org_href"] = all_df["_participant_org_href"].apply(_as_list)
-    if "_key_finding_href" in all_df.columns:
-        all_df["_key_finding_href"] = all_df["_key_finding_href"].apply(_as_list)
     if "_outcome_href" in all_df.columns:
         all_df["_outcome_href"] = all_df["_outcome_href"].apply(_as_list)
 
@@ -946,18 +870,15 @@ def main():
         todo_df = kept_df[~kept_df["project_id"].astype(str).isin(done_ids)].copy()
         print(f"\nEnrichment: {len(done_ids)} already done, {len(todo_df)} remaining")
         organisation_lookup = {}
-        person_lookup = {}
         fund_lookup = {}
 
         if len(todo_df) > 0:
             # Build lookup tables
-            enriched_df, organisation_lookup, person_lookup, fund_lookup = enrich_dataset(
+            enriched_df, organisation_lookup, fund_lookup = enrich_dataset(
                 kept_df=todo_df,
                 session=session,
                 delay=args.delay,
-                collect_sectors=collect_sectors,
                 organisation_lookup=organisation_lookup,
-                person_lookup=person_lookup,
                 fund_lookup=fund_lookup,
                 tqdm_enabled=_HAS_TQDM
             )
@@ -1005,11 +926,16 @@ def main():
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
 
-    # ---- Output 1: kept projects ----
+    # ---- Output 1: simplified master file (kept projects, MASTER_COLS only) ----
+    # Every master column is produced by flatten_project, so under a normal run
+    # this selection is exact; the intersection guard just keeps a partial run
+    # (e.g. --no-enrich) from raising if a column is somehow absent.
+    master_cols = [c for c in MASTER_COLS if c in kept_df.columns]
+    kept_master = kept_df[master_cols]
     out_path = PROC_DIR / f"gtr_projects_{timestamp}.csv"
     latest_path = PROC_DIR / "gtr_projects_latest.csv"
-    kept_df.to_csv(out_path, index=False, encoding="utf-8")
-    kept_df.to_csv(latest_path, index=False, encoding="utf-8")
+    kept_master.to_csv(out_path, index=False, encoding="utf-8")
+    kept_master.to_csv(latest_path, index=False, encoding="utf-8")
 
     # ---- Output 2: full set with filter decisions (audit) ----
     all_path = PROC_DIR / f"gtr_all_with_decision_{timestamp}.csv"
