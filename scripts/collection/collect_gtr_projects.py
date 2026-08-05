@@ -171,6 +171,33 @@ DEFAULT_TERMS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Master output schema
+# ---------------------------------------------------------------------------
+# The master file (output 1) carries only these analysis-ready columns, in this
+# order. flatten_project still produces the fuller record - the screening audit
+# trail plus the longer text fields - and that is retained in the audit file
+# (output 2) and the validation sample (output 3), so nothing is lost, it is
+# just kept out of the file used for analysis.
+MASTER_COLS = [
+    "project_id",
+    "grant_reference",
+    "title",
+    "abstract_text",
+    "lead_funder",
+    "value_gbp",
+    "start_date",
+    "end_date",
+    "grant_category",
+    "status",
+    "lead_organisation",
+    "participant_organisations",
+    "principal_investigator",
+    "research_subjects",
+    "research_topics",
+    "gtr_url",
+]
+
+# ---------------------------------------------------------------------------
 # Stage 2 - screening vocabulary (three tiers)
 # ---------------------------------------------------------------------------
 # Tiers are ordered by how reliably a term signals circular economy. The
@@ -1023,11 +1050,21 @@ def main():
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
 
-    # ---- Output 1: kept projects ----
+    # ---- Output 1: kept projects, MASTER_COLS only ----
+    # Selected defensively: a column absent from this run is skipped rather
+    # than raising, and any missing one is named so a silent schema change
+    # cannot pass unnoticed.
     out_path = PROC_DIR / f"gtr_projects_{timestamp}.csv"
     latest_path = PROC_DIR / "gtr_projects_latest.csv"
-    kept_df.to_csv(out_path, index=False, encoding="utf-8")
-    kept_df.to_csv(latest_path, index=False, encoding="utf-8")
+    master_cols = [c for c in MASTER_COLS if c in kept_df.columns]
+    absent = [c for c in MASTER_COLS if c not in kept_df.columns]
+    if absent:
+        print(f"    NOTE: master columns not produced this run: {absent}")
+    kept_master = kept_df[master_cols]
+    kept_master.to_csv(out_path, index=False, encoding="utf-8")
+    kept_master.to_csv(latest_path, index=False, encoding="utf-8")
+    print(f"    Master file: {len(master_cols)} columns "
+          f"(of {len(kept_df.columns)} collected)")
 
     # ---- Output 2: full set with filter decisions (audit) ----
     all_path = PROC_DIR / f"gtr_all_with_decision_{timestamp}.csv"
