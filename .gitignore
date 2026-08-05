@@ -8,3 +8,9 @@ Cache/
 __pycache__/
 *.pyc
 .env
+logs/
+_MIGRATION_REPORT/
+*.bak
+
+# Generated review folder, rebuild with scripts/build_final_outputs.py
+FINAL/
