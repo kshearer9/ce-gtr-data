@@ -185,6 +185,11 @@ def safe_get(url, params=None, headers=None, timeout=15, retries=5,
         session = requests.Session()
     if failed is None:
         failed = {}
+    # OpenAlex returns 401 'Invalid or missing API key' for a blank api_key,
+    # so omit the parameter entirely rather than sending it empty. The /awards
+    # endpoint works unauthenticated on the free pool.
+    if params and not params.get("api_key"):
+        params = {k: v for k, v in params.items() if k != "api_key"}
     for attempt in range(1, retries + 1):
         try:
             r = session.get(url, params=params, headers=headers,timeout=timeout)
@@ -213,6 +218,9 @@ def safe_get(url, params=None, headers=None, timeout=15, retries=5,
 
             # Permanent client errors
             if 400 <= status < 500:
+                # Previously a silent `return None`, which made an expired key
+                # or a moved endpoint indistinguishable from a genuine no-match.
+                print(f"[{status}] {url} -> {r.text[:160]}")
                 return None
             r.raise_for_status()
             return r
