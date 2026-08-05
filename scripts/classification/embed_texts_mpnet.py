@@ -30,6 +30,12 @@ MODEL = "all-mpnet-base-v2"
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--projects-only", action="store_true",
+                    help="re-embed projects only. The corpus takes hours and does "
+                         "not change when the CE project set changes.")
+    only_projects = ap.parse_args().projects_only
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError:
@@ -47,6 +53,10 @@ def main() -> None:
                        show_progress_bar=True)
     np.save(DIR / "project_embeddings_mpnet.npy", emb)
     print(f"Projects: {emb.shape} in {time.time() - t0:.0f}s")
+
+    if only_projects:
+        print("--projects-only: skipping publications and corpus.")
+        return
 
     pubs = ROOT / "data" / "cleaned" / "outcomes" / "openalex_all_outcomes_clean.csv"
     if pubs.exists():

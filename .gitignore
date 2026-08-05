@@ -14,3 +14,5 @@ _MIGRATION_REPORT/
 
 # Generated review folder, rebuild with scripts/build_final_outputs.py
 FINAL/
+_methodology_tmp/
+*.log
