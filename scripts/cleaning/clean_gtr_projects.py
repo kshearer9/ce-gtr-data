@@ -36,7 +36,7 @@ STRING_COLS = ["project_id",
                "grant_reference",
                "discipline_primary",
                "research_subjects",
-               "research_topics"
+               "research_topics",
                "gtr_url"]
 
 CATEGORY_COLS = ["lead_funder",
@@ -54,6 +54,7 @@ DATE_COLS = [
 COLS_TO_DROP = ["funding_data_available",
                 "n_research_subjects",
                 "matched_search_term",
+                "matched_search_query",
                 "filter_decision",
                 "tier1_matches",
                 "tier2_matches",
