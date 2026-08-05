@@ -77,6 +77,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--terms", default=None, help="comma-separated candidates")
     ap.add_argument("--max-pages", type=int, default=0, help="0 means no cap")
+    ap.add_argument("--counts-only", action="store_true",
+                    help="one request per term, report hit counts and stop. "
+                         "Use this first to see how much work a full run is.")
     ap.add_argument("--delay", type=float, default=1.0)
     args = ap.parse_args()
 
@@ -87,6 +90,20 @@ def main() -> None:
         sys.exit(f"Missing {EXISTING}; run collect_gtr_projects.py first.")
     have = set(pd.read_csv(EXISTING, usecols=["project_id"]).project_id)
     print(f"Current CE set: {len(have)} projects\n")
+
+    if args.counts_only:
+        print(f"{'term':<28}{'hits':>10}   pages at 100/page")
+        with requests.Session() as session:
+            for term in terms:
+                r = session.get(BASE_URL, headers=HEADERS,
+                                params={"q": term, "p": 1, "s": 100}, timeout=60)
+                r.raise_for_status()
+                d = r.json()
+                n, pages = d.get("totalSize", 0), d.get("totalPages", 0)
+                print(f"{term:<28}{n:>10}   {pages} pages (~{pages * args.delay / 60:.0f} min)")
+                time.sleep(args.delay)
+        print("\nRerun without --counts-only to measure net new after screening.")
+        return
 
     rows = []
     with requests.Session() as session:
