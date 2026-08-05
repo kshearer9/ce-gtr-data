@@ -196,7 +196,18 @@ def main() -> None:
     cemb = np.load(DIR / f"corpus_embeddings{sfx}.npy")
     cidx = pd.read_csv(DIR / "corpus_embedding_index.csv")
     corpus = corpus.set_index("project_id").reindex(cidx.project_id).reset_index()
-    ckeep = corpus.primary_field.isin(classes).values
+
+    # LEAKAGE GUARD. The corpus was collected with the CE projects known at the
+    # time excluded. Any project added to the CE set since then is still sitting
+    # in it, and would otherwise appear in the training data and the evaluation
+    # set at once. Exclude by project id against the current CE set, so this
+    # holds however the CE set changes.
+    ce_ids = set(pd.read_csv(PROJECTS, usecols=["project_id"]).project_id)
+    overlap = corpus.project_id.isin(ce_ids)
+    if overlap.any():
+        print(f"  leakage guard: dropped {int(overlap.sum())} corpus rows that are "
+              f"CE projects", flush=True)
+    ckeep = corpus.primary_field.isin(classes).values & ~overlap.values
     Xc, yc = cemb[ckeep], corpus.primary_field.values[ckeep]
     ctext = (corpus.title.fillna("") + ". " + corpus.abstract_text.fillna("")).str.strip().values[ckeep]
     print(f"[{variant}] publications in scope {bkeep.sum()} | corpus in scope {ckeep.sum()}\n")

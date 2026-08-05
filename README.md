@@ -114,7 +114,17 @@ python3 -m scripts.collection.test_wos_api
 python3 -m scripts.collection.collect_wos
 ```
 
-### 11. Merge project and outcome datasets
+### 11. Clean Web of Science Outcomes
+
+Cleans and standardises WoS outcome metadata, regenerates the deduplicated
+paper-level table from the cleaned rows, and cleans the institution
+affiliations.
+
+```bash
+python3 -m scripts.cleaning.clean_wos_outcomes
+```
+
+### 12. Merge project and outcome datasets
 
 Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 
