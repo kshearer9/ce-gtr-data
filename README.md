@@ -100,7 +100,21 @@ Cleans and standardises Scopus outcome metadata.
 python3 -m scripts.cleaning.clean_scopus_outcomes
 ```
 
-### 10. Merge project and outcome datasets
+### 10. Collect Web of Science Outcomes
+
+Matches UKRI projects to Web of Science records by grant reference (FG= field
+tag) and retrieves outcome metadata, author affiliations and, optionally, cited
+references. Requires `WOS_API_KEY` in `.env` and a Web of Science Expanded
+subscription. Run `test_wos_api.py` first to confirm the key works and the
+grant-matching route is available, and `inspect_wos_record.py` to see the shape
+of a single record.
+
+```bash
+python3 -m scripts.collection.test_wos_api
+python3 -m scripts.collection.collect_wos
+```
+
+### 11. Merge project and outcome datasets
 
 Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 
