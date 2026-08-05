@@ -51,17 +51,16 @@ Run examples:
 
 import argparse
 import json
-import random
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 import pandas as pd
 import requests
 import sqlite3
-from utils.cleaning import convert_to_date
+import hashlib
 
 # ---------------------------------------------------------------------------
 # DIRECTORIES
@@ -151,11 +150,24 @@ def save_cache(url, data):
 # Stage 1 - identification: search terms sent to the GtR API
 # ---------------------------------------------------------------------------
 DEFAULT_TERMS = [
-    "circular economy",
-    "industrial symbiosis",
-    "urban mining",
-    "remanufacturing",
-    "circular bioeconomy",
+    "circular econom*",
+    "industrial symbiosis", 
+    "urban min*",
+    "remanufactur*",
+    "circular bioeconom*",
+    "cradle-to-cradle",
+    "closed loop",
+    "circular business",
+    "circular product",
+    "circular industry",
+    "circular management",
+    "circular value chain",
+    "circular transition",
+    "circular supply chain",
+    "waste recovery",
+    "waste renewal",
+    "regenerative design",
+    "regenerative econom*"
 ]
 
 # ---------------------------------------------------------------------------
@@ -381,16 +393,21 @@ MAX_RETRIES = 5          # attempts per request before giving up
 BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
 
 
-def _request_with_retries(session, url, params=None, headers=None, max_retries=5, backoff_base=2, retryable_status=None):
+def _request_with_retries(session, url, params=None, headers=None, max_retries=None, 
+                          backoff_base=None, retryable_status = None):
     """GET a URL with retry-and-backoff on timeouts and transient server errors.
 
     Returns the parsed JSON on success. Raises the last exception if every
     attempt fails, so the caller can decide whether to skip or abort.
     """
-    last_exc = None
-    retryable_status = {500, 502, 503, 504, 429}
     if headers is None:
         headers = {}
+    if max_retries is None:
+        max_retries = MAX_RETRIES
+    if backoff_base is None:
+        backoff_base = BACKOFF_BASE
+    if retryable_status is None:
+        retryable_status = RETRYABLE_STATUS
     for attempt in range(1, max_retries + 1):
         try:
             resp = session.get(url, headers=headers, params=params, timeout=60)
@@ -407,7 +424,6 @@ def _request_with_retries(session, url, params=None, headers=None, max_retries=5
                 isinstance(exc, (requests.Timeout, requests.ConnectionError))
                 or status in retryable_status
             )
-            last_exc = exc
             if not retryable or attempt == max_retries:
                 raise
             # Testing
@@ -422,14 +438,14 @@ def _request_with_retries(session, url, params=None, headers=None, max_retries=5
             print(f"\n    (attempt {attempt}/{max_retries} failed: {exc}; "
                   f"retrying in {wait:.0f}s)", flush=True)
             time.sleep(wait)
-    # Should not reach here, but re-raise defensively.
-    raise last_exc
 
 
-def fetch_page(term, page, size, session, delay):
+def fetch_page(query, page, size, session, delay):
     """Fetch a single page of GtR project search results for a keyword term."""
-    params = {"q": term, "p": page, "s": size}
-    data = _request_with_retries(session, BASE_URL, params=params, headers=HEADERS)
+    params = {"q": query, "p": page, "s": size}
+    data = _request_with_retries(session, BASE_URL, params=params, headers=HEADERS, 
+                                 max_retries=MAX_RETRIES, backoff_base=BACKOFF_BASE,
+                                 retryable_status=RETRYABLE_STATUS)
     time.sleep(delay)
     return data
 
@@ -447,7 +463,9 @@ def fetch_json(href, session, delay):
         return cached
 
     try:
-        data = _request_with_retries(session, href, headers=HEADERS)
+        data = _request_with_retries(session, href, headers=HEADERS, 
+                                     max_retries=MAX_RETRIES, backoff_base=BACKOFF_BASE,
+                                     retryable_status=RETRYABLE_STATUS)
         time.sleep(delay)
         # Save to cache
         save_cache(href, data)
@@ -516,27 +534,23 @@ def fetch_sectors_from_hrefs(hrefs, session, delay):
 # Per-term collection
 # ---------------------------------------------------------------------------
 
-def collect_term(term, size, max_pages, session, delay, raw_path):
+def collect_query(term, size, max_pages, session, delay, raw_path):
     """Collect all pages for one search term, writing the raw JSON to disk
     incrementally (one project per line, JSONL) so nothing is held in memory
     longer than needed and a partial run still leaves a usable raw file."""
-    print(f"\n  Search term: '{term}'")
+    print(f"\nSearch term: '{term}'\n")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
-    total_size = first.get("totalSize", 0)
-    print(f"    {total_size} projects across {total_pages} pages")
 
     if max_pages:
         total_pages = min(total_pages, max_pages)
         print(f"    (limited to {total_pages} page(s) for this run)")
 
-    count = 0
     with open(raw_path, "w", encoding="utf-8") as fh:
         projects = list(first.get("project", []))
         for p in projects:
             fh.write(json.dumps(p, ensure_ascii=False) + "\n")
             yield p
-        count += len(projects)
 
         for page in range(2, total_pages + 1):
             try:
@@ -549,9 +563,7 @@ def collect_term(term, size, max_pages, session, delay, raw_path):
             for p in page_projects:
                 fh.write(json.dumps(p, ensure_ascii=False) + "\n")
                 yield p
-            count += len(page_projects)
             print(f"    page {page}/{total_pages} collected", end="\r")
-    print(f"    collected {count} raw project records          ")
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +572,7 @@ def collect_term(term, size, max_pages, session, delay, raw_path):
 # ---------------------------------------------------------------------------
 
 
-def flatten_project(project, search_term):
+def flatten_project(project, search_query):
     """Flatten nested GtR project JSON into a single structured row."""
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
@@ -646,7 +658,7 @@ def flatten_project(project, search_term):
         "tech_abstract_text": tech_abstract,
         "potential_impact": potential_impact,
         "gtr_url": gtr_url,
-        "matched_search_term": search_term,
+        "matched_search_query": search_query,
         "filter_decision": "keep" if include else "drop",
         "tier1_matches": "; ".join(matches["tier1"]),
         "tier2_matches": "; ".join(matches["tier2"]),
@@ -658,7 +670,7 @@ def flatten_project(project, search_term):
         "_participant_org_href": participant_org_href,
         "_outcome_href": outcome_href,
         "_key_finding_href": key_finding_href
-    }, include
+    }
 
 
 
@@ -717,9 +729,9 @@ def enrich_dataset(kept_df, session, delay, collect_sectors, organisation_lookup
             person_urls.add(row["_pi_href"])
         if row.get("_fund_href"):
             fund_urls.add(row["_fund_href"])
-    print(f"  Organisations: {len(org_urls)}")
-    print(f"  People:        {len(person_urls)}")
-    print(f"  Funds:         {len(fund_urls)}")
+    print(f"    Organisations: {len(org_urls)}")
+    print(f"    People:        {len(person_urls)}")
+    print(f"    Funds:         {len(fund_urls)}")
 
     # Build lookup tables (only fetch missing entries)
     if organisation_lookup is None:
@@ -788,7 +800,8 @@ def load_checkpoint(enriched_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Collect CE projects from the UKRI GtR API.")
-    parser.add_argument("--terms", type=str, default=None)
+    parser.add_argument("--terms", type=str, default=None, 
+                        help="Overwrite default search terms (separate by ',')")
     parser.add_argument("--size", type=int, default=100)
     parser.add_argument("--max-pages", type=int, default=None)
     parser.add_argument("--delay", type=float, default=0.5,
@@ -800,7 +813,8 @@ def main():
                         help="Skip the CE screening (keep all matches)")
     parser.add_argument("--sectors", action="store_true",
                         help="Also collect impact sectors from outcomes (slow)")
-    parser.add_argument("--outcomes", action="store_true", help="Also collect all outcomes")
+    parser.add_argument("--outcome-links", action="store_true", 
+                        help="Also collect all outcomes hrefs")
     parser.add_argument("--validation-size", type=int, default=60)
     parser.add_argument("--checkpoint-every", type=int, default=100,
                         help="Save enrichment progress every N projects (default 100)")
@@ -818,19 +832,21 @@ def main():
     BACKOFF_BASE = max(0.0, args.backoff_base)
 
     size = max(10, min(args.size, 100))
+    # Combine either default or user-entered terms into one search query
     terms = (
         [t.strip() for t in args.terms.split(",") if t.strip()]
         if args.terms else DEFAULT_TERMS
     )
+    search_query = " OR ".join(terms)
     enrich = not args.no_enrich
     apply_filter = not args.no_filter
     collect_sectors = args.sectors
-    collect_outcomes = args.outcomes
+    collect_outcomes = args.outcome_links
 
-    # Checkpoint files are keyed to the run configuration (terms + size +
-    # sectors) so resuming only ever continues a matching run, never mixes
-    # an enrich-with-sectors run with an enrich-without one.
-    run_key = f"{'-'.join(slugify(t) for t in terms)}_s{size}_sec{int(collect_sectors)}"
+    # Checkpoint files are keyed to the run configuration (search terms + page size
+    # + sector setting) with a hash key
+    terms_hash = hashlib.md5(search_query.encode()).hexdigest()[:8]
+    run_key = f"{terms_hash}_s{size}_sec{int(collect_sectors)}"
     screened_ckpt = CKPT_DIR / f"screened_{run_key}.csv"
     enriched_ckpt = CKPT_DIR / f"enriched_{run_key}.jsonl"
 
@@ -864,46 +880,48 @@ def main():
         print(f"  Unique projects in checkpoint: {len(all_df)}")
     else:
         all_rows = []
-        filter_stats = {}
-        for term in terms:
-            raw_path = RAW_DIR / f"gtr_raw_{slugify(term)}_{timestamp}.jsonl"
-            try:
-                kept_n = 0
-                n_raw = 0
-                for p in collect_term(term, size, args.max_pages, session, args.delay, raw_path):
-                    row, include = flatten_project(p, term)
-                    all_rows.append(row)
-                    n_raw += 1
-                    if include:
-                        kept_n += 1
-                filter_stats[term] = (n_raw, kept_n)
-            except requests.RequestException as exc:
-                # A term failing AFTER all retries means the API is genuinely
-                # unavailable. Writing partial output here is the dangerous
-                # failure mode (a "complete"-looking file missing whole terms),
-                # so we abort loudly and write nothing. Nothing is lost: rerun
-                # the same command when the API is back and it starts cleanly.
-                print("\n" + "=" * 64, file=sys.stderr)
-                print(f"ABORTING: collection failed on term '{term}' after "
-                      f"{MAX_RETRIES} retries.", file=sys.stderr)
-                print(f"Reason: {exc}", file=sys.stderr)
-                print("The GtR API appears to be unavailable or rate-limiting. "
-                      "No output\nor checkpoint has been written. Wait a few "
-                      "minutes and rerun the\nsame command - it will start "
-                      "cleanly.", file=sys.stderr)
-                print("=" * 64, file=sys.stderr)
-                sys.exit(1)
+        raw_path = RAW_DIR / f"gtr_raw_{timestamp}.jsonl"
+        try:
+            for p in collect_query(
+                    search_query,
+                    size,
+                    args.max_pages,
+                    session,
+                    args.delay,
+                    raw_path):
+
+                row = flatten_project(p, search_query)
+                all_rows.append(row)
+
+        except requests.RequestException as exc:
+            # A term failing AFTER all retries means the API is genuinely
+            # unavailable. Writing partial output here is the dangerous
+            # failure mode (a "complete"-looking file missing whole terms),
+            # so we abort loudly and write nothing. Nothing is lost: rerun
+            # the same command when the API is back and it starts cleanly.
+            print("\n" + "=" * 64, file=sys.stderr)
+            print(f"ABORTING: collection failed for the combined search query "
+                f"after {MAX_RETRIES} retries.",
+                file=sys.stderr)
+            print(f"Reason: {exc}", file=sys.stderr)
+            print("The GtR API appears to be unavailable or rate-limiting. "
+                    "No output\nor checkpoint has been written. Wait a few "
+                    "minutes and rerun the\nsame command - it will start "
+                    "cleanly.", file=sys.stderr)
+            print("=" * 64, file=sys.stderr)
+            sys.exit(1)
 
         if not all_rows:
             print("\nNo projects collected. Check search terms or connection.")
             sys.exit(1)
 
+        raw_before_dedup = len(all_rows)
         all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
+        duplicates_removed = raw_before_dedup - len(all_df)
 
-        print(f"\n  Unique projects collected: {len(all_df)}")
-        print("\n  Screening summary by term:")
-        for term, (raw, kept) in filter_stats.items():
-            print(f"    {term:25s}  {raw:>4} raw -> {kept:>4} kept  ({raw - kept} dropped)")
+        print(f"\nRecords identified from GtR searches: {raw_before_dedup}")
+        print(f"Duplicate records removed: {duplicates_removed}")
+        print(f"Unique projects collected: {len(all_df)}")
 
         # Save the screened checkpoint INCLUDING the internal href columns,
         # so a resumed enrichment run has everything it needs without
@@ -911,8 +929,9 @@ def main():
         ckpt_df = all_df.copy()
         ckpt_df["_participant_org_href"] = ckpt_df["_participant_org_href"].apply(json.dumps)
         ckpt_df["_key_finding_href"] = ckpt_df["_key_finding_href"].apply(json.dumps)
+        ckpt_df["_outcome_href"] = ckpt_df["_outcome_href"].apply(json.dumps)
         ckpt_df.to_csv(screened_ckpt, index=False, encoding="utf-8")
-        print(f"\n  Screened set saved to checkpoint: {screened_ckpt.name}")
+        print(f"\nScreened set saved to checkpoint: {screened_ckpt.name}")
 
     if "_participant_org_href" in all_df.columns:
         all_df["_participant_org_href"] = all_df["_participant_org_href"].apply(_as_list)
@@ -923,9 +942,16 @@ def main():
 
     if apply_filter:
         kept_df = all_df[all_df["filter_decision"] == "keep"].copy()
+        excluded_df = all_df[all_df["filter_decision"] == "drop"].copy()
     else:
         kept_df = all_df.copy()
-    print(f"  Unique kept projects:      {len(kept_df)}")
+        excluded_df = pd.DataFrame()
+
+    automated_excluded = len(excluded_df)
+    print("\nScreening counts:")
+    print(f"    Records screened: {len(all_df)}")
+    print(f"    Automatically excluded: {automated_excluded}")
+    print(f"    Automatically retained: {len(kept_df)}")
 
     # -----------------------------------------------------------------------
     # Phase 2: enrich only the unique keepers, checkpointing as we go.
@@ -992,7 +1018,7 @@ def main():
                 })
         outcome_path = RAW_DIR / f"gtr_outcome_hrefs.csv"
         pd.DataFrame(outcome_rows).to_csv(outcome_path, index=False, encoding="utf-8")
-        print(f"  Saved {len(outcome_rows)} outcome links to {outcome_path}")
+        print(f"    Saved {len(outcome_rows)} outcome links to {outcome_path}")
 
     kept_df = drop_internal(kept_df)
     all_df_out = drop_internal(all_df)
@@ -1008,7 +1034,6 @@ def main():
     all_df_out.to_csv(all_path, index=False, encoding="utf-8")
 
     # ---- Output 3: validation sample for hand-coding ----
-    random.seed(42)
     n = min(args.validation_size, len(all_df_out))
     sample = all_df_out.sample(n=n, random_state=42).copy()
     # Coerce to string first: a screened set reloaded from the checkpoint CSV
@@ -1018,7 +1043,7 @@ def main():
     sample["potential_impact_preview"] = sample["potential_impact"].fillna("").astype(str).str.slice(0, 300)
     sample["is_ce_manual"] = ""
     val_cols = [
-        "project_id", "title", "matched_search_term", "filter_decision",
+        "project_id", "title", "matched_search_query", "filter_decision",
         "tier1_matches", "tier2_matches", "tier3_matches",
         "abstract_preview", "tech_abstract_preview", "potential_impact_preview",
         "gtr_url", "is_ce_manual",
@@ -1027,9 +1052,9 @@ def main():
     sample[val_cols].to_csv(val_path, index=False, encoding="utf-8")
 
     print(f"\nOutputs in {PROC_DIR}/:")
-    print(f"  {out_path.name}            (kept projects)")
-    print(f"  {all_path.name}   (all projects + screening decision)")
-    print(f"  {val_path.name}      (hand-code: fill is_ce_manual with keep/drop)")
+    print(f"    {out_path.name}            (kept projects)")
+    print(f"    {all_path.name}   (all projects + screening decision)")
+    print(f"    {val_path.name}   (hand-code: fill is_ce_manual with keep/drop)")
     print(f"\nCheckpoints in {CKPT_DIR}/ (safe to delete now this run finished cleanly).")
     print("\nDone.")
 
