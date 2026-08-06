@@ -20,10 +20,15 @@ echo "=== $(date) : starting rebuild ==="
 # --- 1. Swap the union in, keeping the file it replaces -----------------------
 echo
 echo "--- step 1: install the union as the cleaned GtR projects file ---"
-cp data/cleaned/gtr_projects_clean.csv \
-   data/cleaned/_superseded_1380/gtr_projects_clean_1640.csv
+if [ ! -f data/cleaned/_superseded_1380/gtr_projects_clean_1640.csv ]; then
+    cp data/cleaned/gtr_projects_clean.csv \
+       data/cleaned/_superseded_1380/gtr_projects_clean_1640.csv
+    echo "backed up the 1,640 file"
+else
+    echo "1,640 backup already exists, not overwriting it"
+fi
 cp data/cleaned/gtr_projects_union.csv data/cleaned/gtr_projects_clean.csv
-echo "backed up the 1,640 file, installed the 1,673 union"
+echo "installed the 1,673 union"
 
 # --- 2. Rebuild the merged project table -------------------------------------
 echo
@@ -61,6 +66,13 @@ $PY scripts/classification/embed_texts_mpnet.py --projects-only
 echo
 echo "--- step 5: bake-off and set-ups A to H (~4 hours) ---"
 $PY scripts/classification/run_variant.py --crosswalk james
+
+# --- 6. Clean the WoS outcomes ------------------------------------------------
+# Independent of the classification rebuild, so it runs last: a failure here
+# cannot cost the modelling run. Needs the anaconda interpreter for nameparser.
+echo
+echo "--- step 6: clean WoS outcomes (~1 min) ---"
+$PY -m scripts.cleaning.clean_wos_outcomes
 
 echo
 echo "=== $(date) : rebuild finished ==="
