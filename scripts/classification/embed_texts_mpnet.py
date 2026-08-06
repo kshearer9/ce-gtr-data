@@ -52,7 +52,13 @@ def main() -> None:
     emb = model.encode(texts.tolist(), batch_size=32, normalize_embeddings=True,
                        show_progress_bar=True)
     np.save(DIR / "project_embeddings_mpnet.npy", emb)
-    print(f"Projects: {emb.shape} in {time.time() - t0:.0f}s")
+    # Rewrite the row index alongside the embeddings. The index maps project_id
+    # to row and MUST be regenerated whenever the project set changes; reusing
+    # a stale index silently misaligns every embedding lookup. Note this
+    # orphans any older MiniLM .npy written against the previous index.
+    pd.DataFrame({"project_id": projects.project_id}).to_csv(
+        DIR / "project_embedding_index.csv", index=False)
+    print(f"Projects: {emb.shape} in {time.time() - t0:.0f}s (index rewritten)")
 
     if only_projects:
         print("--projects-only: skipping publications and corpus.")

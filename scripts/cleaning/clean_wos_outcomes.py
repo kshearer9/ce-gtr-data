@@ -18,7 +18,7 @@ Exported outputs:
 from pathlib import Path
 import pandas as pd
 from utils.cleaning import (normalise_name, convert_to_string,
-                            convert_to_date, clean_text_columns,
+                            clean_text_columns,
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
 
@@ -155,7 +155,12 @@ def main():
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
-    df = convert_to_date(df, *DATE_COLUMNS)
+    # WoS dates are ISO strings (2025-10-10), unlike GtR's millisecond
+    # timestamps, so the shared convert_to_date helper (unit="ms") coerces
+    # them all to NaT. Parse them directly instead.
+    for col in DATE_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
     df["authors_clean"] = df["authors"].apply(clean_authors)
