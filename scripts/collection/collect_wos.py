@@ -106,6 +106,8 @@ for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
 # Candidate input files, tried in order. The merged team dataset is preferred
 # once available; the enriched cleaned file is the fallback.
 INPUT_CANDIDATES = [
+    CLEAN_INPUT_DIR / "merged" / "projects.csv",
+    CLEAN_INPUT_DIR / "gtr_projects_clean.csv",
     CLEAN_INPUT_DIR / "merged" / "projects_-_cleaned.csv",
     CLEAN_INPUT_DIR / "merged" / "projects_cleaned.csv",
     PROC_INPUT_DIR / "gtr_ce_projects_enriched_clean.csv",
@@ -800,6 +802,12 @@ def main():
     def write(df, name):
         latest = PROC_DIR / f"{name}_latest.csv"
         archive = PROC_DIR / f"{name}_{stamp}.csv"
+        # A fully resumed run rebuilds outcomes from the checkpoint but collects
+        # no fresh institution rows, so this frame can legitimately be empty.
+        # Writing it would destroy a good file from a previous run, so refuse.
+        if df.empty and latest.exists():
+            print(f"    {name}: nothing new collected, keeping the existing file")
+            return latest
         df.to_csv(latest, index=False)
         df.to_csv(archive, index=False)
         return latest

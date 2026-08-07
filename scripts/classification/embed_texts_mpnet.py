@@ -35,7 +35,13 @@ def main() -> None:
     ap.add_argument("--projects-only", action="store_true",
                     help="re-embed projects only. The corpus takes hours and does "
                          "not change when the CE project set changes.")
-    only_projects = ap.parse_args().projects_only
+    ap.add_argument("--no-corpus", action="store_true",
+                    help="re-embed projects and publications but skip the 51,000 "
+                         "project corpus, which only changes when the corpus is "
+                         "recollected. This is what you want after an outcome "
+                         "re-collection.")
+    args = ap.parse_args()
+    only_projects, skip_corpus = args.projects_only, args.no_corpus
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError:
@@ -74,6 +80,10 @@ def main() -> None:
                             show_progress_bar=True)
         np.save(DIR / "publication_embeddings_mpnet.npy", pemb)
         print(f"Publications: {pemb.shape} in {time.time() - t0:.0f}s")
+
+    if skip_corpus:
+        print("--no-corpus: skipping the corpus, which is unchanged.")
+        return
 
     if CORPUS.exists():
         corpus = pd.read_csv(CORPUS)
