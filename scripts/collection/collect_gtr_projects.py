@@ -416,8 +416,10 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
 RETRYABLE_STATUS = {500, 502, 503, 504, 429}
 
 # Tunable retry behaviour (overridable from the CLI via globals set in main()).
-MAX_RETRIES = 5          # attempts per request before giving up
-BACKOFF_BASE = 2.0       # seconds; wait grows 2, 4, 8, 16 ... between attempts
+MAX_RETRIES = 8          # attempts per request before giving up
+BACKOFF_BASE = 3.0       # seconds; wait grows 3, 9, 27, 81, 243 ... between
+                         # attempts, so a term survives roughly ten minutes of
+                         # GtR being unwell rather than one.
 
 
 def _request_with_retries(session, url, params=None, headers=None, max_retries=None, 
@@ -561,10 +563,33 @@ def fetch_sectors_from_hrefs(hrefs, session, delay):
 # Per-term collection
 # ---------------------------------------------------------------------------
 
+def _replay_raw(raw_path):
+    """Yield projects from a previously completed raw file."""
+    with open(raw_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+
 def collect_query(term, size, max_pages, session, delay, raw_path):
     """Collect all pages for one search term, writing the raw JSON to disk
     incrementally (one project per line, JSONL) so nothing is held in memory
-    longer than needed and a partial run still leaves a usable raw file."""
+    longer than needed and a partial run still leaves a usable raw file.
+
+    If a completed raw file for this term already exists, it is replayed from
+    disk instead of refetched. Completion is signalled by a .done marker
+    written only after the final page, so a truncated file is never reused.
+    """
+    done_marker = raw_path.with_suffix(raw_path.suffix + ".done")
+    cached = sorted(raw_path.parent.glob(f"{raw_path.stem.rsplit('_', 2)[0]}_*.jsonl.done"))
+    if cached:
+        source = cached[-1].with_suffix("")
+        if source.exists():
+            print(f"\nSearch term: '{term}' (replaying {source.name}, already complete)")
+            yield from _replay_raw(source)
+            return
+
     print(f"\nSearch term: '{term}'\n")
     first = fetch_page(term, 1, size, session, delay)
     total_pages = first.get("totalPages", 1)
@@ -592,6 +617,9 @@ def collect_query(term, size, max_pages, session, delay, raw_path):
                 yield p
             print(f"    page {page}/{total_pages} collected", end="\r")
 
+    # Every page for this term is on disk, so mark it replayable.
+    done_marker.write_text("complete\n", encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # Project flattening (no API calls - just reshapes the search response and
@@ -599,7 +627,7 @@ def collect_query(term, size, max_pages, session, delay, raw_path):
 # ---------------------------------------------------------------------------
 
 
-def flatten_project(project, search_query):
+def flatten_project(project, search_term):
     """Flatten nested GtR project JSON into a single structured row."""
     subjects = project.get("researchSubjects", {}).get("researchSubject", [])
     topics = project.get("researchTopics", {}).get("researchTopic", [])
@@ -685,7 +713,7 @@ def flatten_project(project, search_query):
         "tech_abstract_text": tech_abstract,
         "potential_impact": potential_impact,
         "gtr_url": gtr_url,
-        "matched_search_query": search_query,
+        "matched_search_terms": "",  # filled after the union with the retrieving terms
         "filter_decision": "keep" if include else "drop",
         "tier1_matches": "; ".join(matches["tier1"]),
         "tier2_matches": "; ".join(matches["tier2"]),
@@ -906,20 +934,36 @@ def main():
         # internal), so the screened checkpoint stores them too - see below.
         print(f"  Unique projects in checkpoint: {len(all_df)}")
     else:
-        all_rows = []
-        raw_path = RAW_DIR / f"gtr_raw_{timestamp}.jsonl"
+        # Each term is queried SEPARATELY and results are unioned locally on
+        # project_id. A single combined OR query returns >100k records over
+        # ~1,100 pages of a relevance-ranked response, and deep pagination of
+        # that response proved unstable (projects observably present in the
+        # database were missing from late pages). Per-term queries keep each
+        # pagination shallow, make retrieval reproducible, and give exact
+        # per-term provenance for free. The abort guard still covers the whole
+        # run: if any term fails after retries, nothing is written.
+        seen = {}            # project_id -> flattened row (first sighting)
+        provenance = {}      # project_id -> set of retrieving terms
+        n_raw_total = 0
         try:
-            for p in collect_query(
-                    search_query,
-                    size,
-                    args.max_pages,
-                    session,
-                    args.delay,
-                    raw_path):
-
-                row = flatten_project(p, search_query)
-                all_rows.append(row)
-
+            for term in terms:
+                raw_path = RAW_DIR / f"gtr_raw_{slugify(term)}_{timestamp}.jsonl"
+                n_raw = n_new = 0
+                for p in collect_query(
+                        term,
+                        size,
+                        args.max_pages,
+                        session,
+                        args.delay,
+                        raw_path):
+                    pid = p.get("id", "")
+                    n_raw += 1
+                    provenance.setdefault(pid, set()).add(term)
+                    if pid not in seen:
+                        seen[pid] = flatten_project(p, term)
+                        n_new += 1
+                n_raw_total += n_raw
+                print(f"    '{term}': {n_raw} records, {n_new} new unique")
         except requests.RequestException as exc:
             # A term failing AFTER all retries means the API is genuinely
             # unavailable. Writing partial output here is the dangerous
@@ -927,7 +971,7 @@ def main():
             # so we abort loudly and write nothing. Nothing is lost: rerun
             # the same command when the API is back and it starts cleanly.
             print("\n" + "=" * 64, file=sys.stderr)
-            print(f"ABORTING: collection failed for the combined search query "
+            print(f"ABORTING: collection failed on term '{term}' "
                 f"after {MAX_RETRIES} retries.",
                 file=sys.stderr)
             print(f"Reason: {exc}", file=sys.stderr)
@@ -938,16 +982,18 @@ def main():
             print("=" * 64, file=sys.stderr)
             sys.exit(1)
 
-        if not all_rows:
+        if not seen:
             print("\nNo projects collected. Check search terms or connection.")
             sys.exit(1)
 
-        raw_before_dedup = len(all_rows)
-        all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
-        duplicates_removed = raw_before_dedup - len(all_df)
+        for pid, row in seen.items():
+            row["matched_search_terms"] = "; ".join(sorted(provenance[pid]))
+        all_rows = list(seen.values())
 
-        print(f"\nRecords identified from GtR searches: {raw_before_dedup}")
-        print(f"Duplicate records removed: {duplicates_removed}")
+        all_df = pd.DataFrame(all_rows).drop_duplicates(subset="project_id").reset_index(drop=True)
+
+        print(f"\nRecords identified from GtR searches: {n_raw_total}")
+        print(f"Duplicate records removed: {n_raw_total - len(all_df)}")
         print(f"Unique projects collected: {len(all_df)}")
 
         # Save the screened checkpoint INCLUDING the internal href columns,
@@ -1080,7 +1126,7 @@ def main():
     sample["potential_impact_preview"] = sample["potential_impact"].fillna("").astype(str).str.slice(0, 300)
     sample["is_ce_manual"] = ""
     val_cols = [
-        "project_id", "title", "matched_search_query", "filter_decision",
+        "project_id", "title", "matched_search_terms", "filter_decision",
         "tier1_matches", "tier2_matches", "tier3_matches",
         "abstract_preview", "tech_abstract_preview", "potential_impact_preview",
         "gtr_url", "is_ce_manual",
