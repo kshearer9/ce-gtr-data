@@ -58,6 +58,17 @@ SCOPUS = OUT_DIR / "scopus_all_outcomes_clean.csv"
 WOS = OUT_DIR / "wos_all_outcomes_clean.csv"
 OUT = OUT_DIR / "publications_labelled.csv"
 MAPPINGS = OUT_DIR / "derived_field_mappings.csv"
+PROBS = OUT_DIR / "publication_field_probabilities.csv"
+
+# The project side folds two classes it could not learn at the sizes available.
+# The same fold has to be applied here or the two sides of RQ3 are counted on
+# different taxonomies and any difference between them is partly an artefact of
+# the mismatch. Applied to the OpenAlex field at load, so the authority table,
+# both derived mappings and the abstract classifier all inherit it.
+FIELD_MERGE = {
+    "Biochemistry, Genetics and Molecular Biology": "Agricultural and Biological Sciences",
+    "Materials Science": "Engineering",
+}
 
 MIN_SUPPORT = 5       # observed pairings needed before a label is trusted
 MIN_SHARE = 0.50      # the modal field must hold at least this share
@@ -77,7 +88,7 @@ def split_labels(value, sep=r"[;|]"):
     return [p.strip() for p in re.split(sep, str(value)) if p.strip()]
 
 
-def derive_mapping(pairs: pd.DataFrame, name: str) -> tuple[dict, float, int]:
+def derive_mapping(pairs: pd.DataFrame, name: str):
     """Learn label -> OpenAlex field from observed pairings.
 
     Held-out validation: derive on a random half, score on the other, so the
@@ -101,12 +112,29 @@ def derive_mapping(pairs: pd.DataFrame, name: str) -> tuple[dict, float, int]:
     acc = float((scored.label.map(trial) == scored.oa_field).mean()) if len(scored) else 0.0
 
     full = build(pairs)
+    # The same evidence, kept as a distribution rather than collapsed to its
+    # mode. A Citation Topic whose papers are 60% Engineering and 40% Energy
+    # says so here, where the hard table records only "Engineering". Restricted
+    # to the labels the hard table retained, so both outputs describe the same
+    # papers and their coverage figures stay comparable.
+    dist = {}
+    for label, grp in pairs[pairs.label.isin(full)].groupby("label"):
+        dist[label] = grp.oa_field.value_counts(normalize=True).to_dict()
     print(f"  {name}: {len(full)} labels retained of {pairs.label.nunique()} seen "
           f"| held-out accuracy {acc:.1%} on {len(scored)} papers")
-    return full, acc, len(scored)
+    return full, dist, acc, len(scored)
 
 
 def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--taxonomy", choices=["merged10", "full"], default="merged10",
+                    help="merged10 folds Biochemistry into Agricultural and "
+                         "Biological Sciences and Materials Science into "
+                         "Engineering, matching the project side. full leaves "
+                         "the OpenAlex fields untouched.")
+    args = ap.parse_args()
+
     for path in (OPENALEX, SCOPUS, WOS):
         if not path.exists():
             sys.exit(f"Missing {path}. Run the collection and cleaning first.")
@@ -116,6 +144,14 @@ def main() -> None:
     wo = pd.read_csv(WOS, low_memory=False)
     for frame in (oa, sc, wo):
         frame["doi_norm"] = frame.doi.map(norm_doi)
+
+    if args.taxonomy == "merged10":
+        before = oa.field.nunique()
+        oa["field"] = oa.field.replace(FIELD_MERGE)
+        print(f"Taxonomy: merged10, {before} OpenAlex fields folded to "
+              f"{oa.field.nunique()}")
+    else:
+        print(f"Taxonomy: full, {oa.field.nunique()} OpenAlex fields left as they are")
 
     # OpenAlex is the authority: one field per DOI.
     authority = (oa.dropna(subset=["doi_norm", "field"])
@@ -132,7 +168,7 @@ def main() -> None:
             for lab in split_labels(r.subject_areas):
                 sc_pairs.append((lab, authority[r.doi_norm]))
     sc_pairs = pd.DataFrame(sc_pairs, columns=["label", "oa_field"])
-    sc_map, sc_acc, sc_n = derive_mapping(sc_pairs, "Scopus ASJC")
+    sc_map, sc_dist, sc_acc, sc_n = derive_mapping(sc_pairs, "Scopus ASJC")
 
     # --- WoS Citation Topics, micro level -----------------------------------
     wo_pairs = []
@@ -141,7 +177,7 @@ def main() -> None:
             for lab in split_labels(r.citation_topic_micro):
                 wo_pairs.append((lab, authority[r.doi_norm]))
     wo_pairs = pd.DataFrame(wo_pairs, columns=["label", "oa_field"])
-    wo_map, wo_acc, wo_n = derive_mapping(wo_pairs, "WoS Citation Topic")
+    wo_map, wo_dist, wo_acc, wo_n = derive_mapping(wo_pairs, "WoS Citation Topic")
 
     # --- A classifier over the abstract, trained on the OpenAlex labels ------
     # Sits between the two derived tables in accuracy and reaches papers that
@@ -191,18 +227,32 @@ def main() -> None:
         t = f"{row.get('title_clean') or ''}. {row.get('abstract_clean') or ''}".strip()
         return t if len(t) > 40 else None
 
-    rows = {}
+    def blend(labels, dist):
+        """Mean of the conditional distributions of a paper's mapped labels."""
+        parts = [dist[l] for l in labels if l in dist]
+        if not parts:
+            return None
+        out = {}
+        for part in parts:
+            for field, p in part.items():
+                out[field] = out.get(field, 0.0) + p / len(parts)
+        return out
+
+    rows, probs = {}, {}
     for _, r in oa.dropna(subset=["doi_norm"]).iterrows():
         if pd.notna(r.get("field")):
             rows[r.doi_norm] = (r.field, "direct_openalex", 1.0, r.get("title"))
+            probs[r.doi_norm] = {r.field: 1.0}
 
     # 2. WoS Citation Topics, the strongest inferred route
     for _, r in wo.dropna(subset=["doi_norm"]).iterrows():
         if r.doi_norm in rows:
             continue
-        f = vote(split_labels(r.citation_topic_micro), wo_map)
+        labels = split_labels(r.citation_topic_micro)
+        f = vote(labels, wo_map)
         if f:
             rows[r.doi_norm] = (f, "wos_citation_topic", round(wo_acc, 3), r.get("title"))
+            probs[r.doi_norm] = blend(labels, wo_dist)
 
     # 3. The abstract classifier
     if clf is not None:
@@ -217,17 +267,21 @@ def main() -> None:
         seen = set()
         pending = [x for x in pending if not (x[0] in seen or seen.add(x[0]))]
         if pending:
-            preds = clf.predict([x[1] for x in pending])
-            for (doi, _, title), f in zip(pending, preds):
+            proba = clf.predict_proba([x[1] for x in pending])
+            preds = clf.classes_[np.argmax(proba, axis=1)]
+            for (doi, _, title), f, row in zip(pending, preds, proba):
                 rows[doi] = (f, "abstract_classifier", round(clf_acc, 3), title)
+                probs[doi] = dict(zip(clf.classes_, row))
 
     # 4. Scopus ASJC, last resort: journal-level and the weakest route
     for _, r in sc.dropna(subset=["doi_norm"]).iterrows():
         if r.doi_norm in rows:
             continue
-        f = vote(split_labels(r.subject_areas), sc_map)
+        labels = split_labels(r.subject_areas)
+        f = vote(labels, sc_map)
         if f:
             rows[r.doi_norm] = (f, "scopus_asjc", round(sc_acc, 3), r.get("title"))
+            probs[r.doi_norm] = blend(labels, sc_dist)
 
     labelled = pd.DataFrame(
         [(d, f, m, a, t) for d, (f, m, a, t) in rows.items()],
@@ -252,6 +306,33 @@ def main() -> None:
              "route_accuracy": np.nan, "title": None, "tier": np.nan})],
             ignore_index=True)
 
+    # --- the probability matrix, for soft counting ---------------------------
+    # RQ3 compares two distributions, and hard assignment biases a distribution
+    # towards whatever the classifier over-predicts. Soft counting, adding each
+    # paper's probability to every field, halved that error on the project side
+    # (total variation 0.044 against 0.091), so the output side is built the
+    # same way or the two are not comparable.
+    #
+    # Each route contributes what it actually knows. A direct OpenAlex field is
+    # observed, so it enters as one-hot. A derived label contributes the
+    # measured distribution of OpenAlex fields among the papers carrying it.
+    # The classifier contributes its posterior.
+    #
+    # Those posteriors are uncalibrated, as on the project side. That is a real
+    # limitation and it belongs in the write-up, but it is the same limitation
+    # on both sides of the comparison, so it partly cancels rather than
+    # manufacturing a difference between them.
+    fields = sorted({f for d in probs.values() if d for f in d})
+    matrix = pd.DataFrame(
+        [[probs[doi].get(f, 0.0) for f in fields] for doi in labelled.doi
+         if probs.get(doi)],
+        columns=fields)
+    matrix.insert(0, "doi", [d for d in labelled.doi if probs.get(d)])
+    matrix.to_csv(PROBS, index=False, encoding="utf-8")
+    mass = float(matrix[fields].to_numpy().sum())
+    print(f"\nProbability matrix: {len(matrix)} papers x {len(fields)} fields, "
+          f"total mass {mass:.1f} (should equal {len(matrix)})")
+
     labelled.to_csv(OUT, index=False, encoding="utf-8")
     pd.concat([
         pd.DataFrame({"source": "scopus_asjc", "label": list(sc_map),
@@ -272,6 +353,7 @@ def main() -> None:
         print(f"    tier {int(t_)}: {n}")
     print(f"\nWrote {OUT}")
     print(f"Wrote {MAPPINGS}")
+    print(f"Wrote {PROBS}")
 
 
 if __name__ == "__main__":

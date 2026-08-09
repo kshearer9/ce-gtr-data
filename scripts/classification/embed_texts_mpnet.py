@@ -79,7 +79,14 @@ def main() -> None:
         pemb = model.encode(ptexts.tolist(), batch_size=32, normalize_embeddings=True,
                             show_progress_bar=True)
         np.save(DIR / "publication_embeddings_mpnet.npy", pemb)
-        print(f"Publications: {pemb.shape} in {time.time() - t0:.0f}s")
+        # Same rule as the project index: the index maps row to publication and
+        # MUST be rewritten with the array. It was not, which left a 3,260-row
+        # index against a 3,122-row array and an IndexError in run_variant's
+        # set-ups B and C. run_variant reads project_id and field from here.
+        o[["project_id", "field"]].to_csv(
+            DIR / "publication_embedding_index.csv", index=False)
+        print(f"Publications: {pemb.shape} in {time.time() - t0:.0f}s "
+              f"(index rewritten)")
 
     if skip_corpus:
         print("--no-corpus: skipping the corpus, which is unchanged.")
@@ -94,7 +101,9 @@ def main() -> None:
         cemb = model.encode(ctexts.tolist(), batch_size=32,
                             normalize_embeddings=True, show_progress_bar=True)
         np.save(DIR / "corpus_embeddings_mpnet.npy", cemb)
-        print(f"Corpus: {cemb.shape} in {time.time() - t0:.0f}s")
+        corpus[["project_id"]].to_csv(
+            DIR / "corpus_embedding_index.csv", index=False)
+        print(f"Corpus: {cemb.shape} in {time.time() - t0:.0f}s (index rewritten)")
     else:
         print(f"{CORPUS} not found; skipped the corpus (projects only).")
 

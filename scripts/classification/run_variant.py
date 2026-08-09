@@ -6,8 +6,10 @@ bake-off and the training-corpus set-ups A to H. Every output is tagged with the
 variant name so runs never overwrite each other.
 
 Crosswalk variants
-    james   the verified crosswalk, ASJC placement plus corpus evidence
-    kirsty  as above with the second reviewer's six amendments applied
+    james     the verified crosswalk, ASJC placement plus corpus evidence
+    kirsty    as above with the second reviewer's six amendments applied
+    merged10  as james, with the two unlearnable classes folded into their
+              nearest neighbours. A post-hoc revision; see MERGED10 below
 
 Set-ups
     A  CE project abstracts only
@@ -61,6 +63,32 @@ WEIGHT_GRID = [1, 5, 10, 25, 50, 100]
 MIN_CLASS = 5
 
 # Second reviewer's amendments (see crosswalk_kirsty_verified.xlsx)
+# Two classes could not be learned at the sizes available: Biochemistry,
+# Genetics and Molecular Biology (8 gold projects, F1 0.00) and Materials
+# Science (11, F1 0.27). The "merged10" variant folds each into its nearest
+# neighbour within the same ASJC top-level cluster, giving ten classes.
+#
+# Be clear about what this is. It is a POST-HOC revision, decided after the
+# twelve-class results were seen, on the grounds that a class the model never
+# once predicts correctly carries no information and drags the macro average
+# without describing anything. Conceptual proximity supports the choice of
+# merge target but does not by itself justify merging. Both schemes must be
+# reported, and the twelve-class figures are the pre-declared ones.
+#
+# The same merge has to be applied to the publication labels before the
+# input-output comparison, or the two sides will be counted on different
+# taxonomies.
+MERGED10 = {
+    # Biochemistry, Genetics and Molecular Biology -> Agricultural and Biological Sciences
+    "Biomolecules & biochemistry": "Agricultural and Biological Sciences",
+    "Omic sciences & technologies": "Agricultural and Biological Sciences",
+    "Cell biology": "Agricultural and Biological Sciences",
+    "Genetics & development": "Agricultural and Biological Sciences",
+    # Materials Science -> Engineering, consistent with the crosswalk already
+    # routing "Materials processing" to Engineering
+    "Materials sciences": "Engineering",
+}
+
 KIRSTY = {
     "Bioengineering": "Engineering",
     "Materials processing": "Materials Science",
@@ -127,6 +155,8 @@ def load_mapping(variant):
     mapping.update(EXTENSION)
     if variant == "kirsty":
         mapping.update(KIRSTY)
+    elif variant == "merged10":
+        mapping.update(MERGED10)
     return mapping
 
 
@@ -164,7 +194,8 @@ def score(y_true, pred):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--crosswalk", choices=["james", "kirsty"], required=True)
+    ap.add_argument("--crosswalk", choices=["james", "kirsty", "merged10"],
+                    required=True)
     ap.add_argument("--suffix", default="_mpnet", help="embedding suffix")
     ap.add_argument("--skip-h", action="store_true", help="skip the slow ensemble set-up")
     args = ap.parse_args()
@@ -187,6 +218,20 @@ def main() -> None:
 
     bemb = np.load(DIR / f"publication_embeddings{sfx}.npy")
     bidx = pd.read_csv(DIR / "publication_embedding_index.csv")
+    # A stale index against a fresh array silently pairs each publication with
+    # another one's vector, so refuse rather than mask it with a bare IndexError.
+    if len(bidx) != len(bemb):
+        sys.exit(f"publication_embedding_index.csv has {len(bidx)} rows against "
+                 f"{len(bemb)} embeddings. Re-run embed_texts_mpnet.py --no-corpus.")
+    # Publication labels arrive as OpenAlex fields, so they never pass through
+    # the subject-level crosswalk. Under a merging variant they have to be
+    # folded separately or the merged classes are dropped instead of absorbed,
+    # which silently removed 758 publications from set-ups B and C.
+    if variant == "merged10":
+        field_merge = {"Biochemistry, Genetics and Molecular Biology":
+                       "Agricultural and Biological Sciences",
+                       "Materials Science": "Engineering"}
+        bidx["field"] = bidx.field.replace(field_merge)
     bkeep = bidx.field.isin(classes).values
     Xb, yb, bproj = bemb[bkeep], bidx.field.values[bkeep], bidx.project_id.values[bkeep]
 
@@ -195,6 +240,9 @@ def main() -> None:
     corpus["primary_field"] = corpus.research_subjects.map(lambda s: primary_field(s, mapping))
     cemb = np.load(DIR / f"corpus_embeddings{sfx}.npy")
     cidx = pd.read_csv(DIR / "corpus_embedding_index.csv")
+    if len(cidx) != len(cemb):
+        sys.exit(f"corpus_embedding_index.csv has {len(cidx)} rows against "
+                 f"{len(cemb)} embeddings. Re-run embed_texts_mpnet.py.")
     corpus = corpus.set_index("project_id").reindex(cidx.project_id).reset_index()
 
     # LEAKAGE GUARD. The corpus was collected with the CE projects known at the
