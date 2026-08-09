@@ -1,0 +1,8 @@
+metric,value,n
+strict,0.7352,287
+primary_or_secondary,0.7631,287
+any_tagged_field,0.8711,287
+partial_credit,0.6535,287
+partial_credit_ceiling,0.7868,287
+proportion_of_achievable,0.8305,287
+projects_spanning_multiple_fields,0.561,161

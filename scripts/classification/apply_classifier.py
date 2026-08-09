@@ -70,7 +70,6 @@ CORPUS = DIR / "gtr_tagged_corpus.csv"
 SEED = 20260803
 C_TFIDF, C_EMB, MAX_ITER = 1.0, 3.0, 3000
 WEIGHT_GRID = [1, 5, 10, 25, 50, 100]
-VARIANT = "james"
 
 # Reused verbatim from run_variant.py so the crosswalk applied here cannot
 # drift from the one the evaluation used.
@@ -274,11 +273,58 @@ def write_coding_sheet(sample, classes, out_xlsx):
     wb.save(out_xlsx)
 
 
+
+def _oof_and_threshold(folds, loc, gold, y, Xc, yc, Zc, Xg, Zg, weight, args, t0):
+    """Out-of-fold predictions from H, then read the threshold off the curve."""
+    print(f"\nout-of-fold predictions from set-up H (weight x{weight})")
+    oof = []
+    for fold in folds:
+        tr = [loc[p] for p in fold["train"]]
+        te = [loc[p] for p in fold["test"]]
+        emb, tfidf = fit_h(Xc, yc, Zc, Xg[tr], y[tr], Zg[tr], weight)
+        pred, conf, _ = predict_h(emb, tfidf, Xg[te], Zg[te])
+        oof.append(pd.DataFrame(dict(split=fold["split"],
+                                     project_id=gold.project_id.values[te],
+                                     true_field=y[te], pred_field=pred,
+                                     confidence=conf)))
+        print(f"  split {fold['split']:2d} done [{time.time() - t0:.0f}s]", flush=True)
+    oof = pd.concat(oof, ignore_index=True)
+    oof["correct"] = oof.pred_field == oof.true_field
+    oof.to_csv(RESULTS / "oof_predictions_H.csv", index=False)
+    print(f"  overall out-of-fold accuracy {oof.correct.mean():.3f}, "
+          f"macro-F1 {f1_score(oof.true_field, oof.pred_field, average='macro'):.3f}")
+
+    curve = accuracy_reject_curve(oof.confidence.values, oof.correct.values)
+    curve.to_csv(RESULTS / "accuracy_reject_curve.csv", index=False)
+    print("\naccuracy-reject curve, at selected coverage points")
+    for cov in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
+        r = curve.iloc[(curve.coverage - cov).abs().argmin()]
+        print(f"  coverage {r.coverage:.2f}  threshold {r.threshold:.3f}  "
+              f"accuracy {r.accuracy:.3f}")
+
+    chosen = pick_threshold(curve, args.target_accuracy, args.min_coverage)
+    if chosen is None:
+        best = curve[curve.coverage >= args.min_coverage].accuracy.max()
+        sys.exit(f"\nNo threshold reaches {args.target_accuracy:.0%} accuracy at "
+                 f"{args.min_coverage:.0%} coverage. The best available is "
+                 f"{best:.3f}. Lower --target-accuracy and rerun, and say in the "
+                 f"methodology that the target was revised and why.")
+    tau = float(chosen.threshold)
+    lo, hi = wilson(int(chosen.n_correct), int(chosen.n_retained))
+    print(f"\nthreshold {tau:.3f} for a {args.target_accuracy:.0%} target")
+    print(f"  retained {int(chosen.n_retained)}/{len(oof)} out-of-fold "
+          f"({chosen.coverage:.1%}), accuracy {chosen.accuracy:.3f} "
+          f"[{lo:.3f}, {hi:.3f}]")
+    below = oof[oof.confidence < tau]
+    print(f"  below the threshold: accuracy {below.correct.mean():.3f} on {len(below)}")
+    return oof, curve, chosen, tau, lo, hi, below
+
+
 FUNDER_CANDIDATES = ["funder", "funder_name", "funding_org", "funding_organisation",
                      "lead_funder", "council", "funder_clean"]
 
 
-def build_verification_sample(labelled, proj, classes, n):
+def build_verification_sample(labelled, proj, classes, n, reuse=False):
     """Stratified blind coding sheet, plus the key it is scored against."""
     sub = pd.DataFrame({"project_id": coalesce(proj, "project_id"),
                         "abstract_text_clean": coalesce(proj, "abstract_text_clean")})
@@ -294,13 +340,26 @@ def build_verification_sample(labelled, proj, classes, n):
             .merge(sub, on="project_id", how="left"))
     pool = pool[pool.abstract_text_clean.notna() & (pool.abstract_text_clean != "")]
 
-    rng = np.random.RandomState(SEED)
-    sample = stratified_sample(pool, min(n, len(pool)), ["tier", "model_field"], rng)
-    sample.insert(0, "sample_id", [f"V{i:03d}" for i in range(1, len(sample) + 1)])
-
     sheet = ROOT / "data" / "validation" / "discipline_verification_sample.xlsx"
+    key_path = sheet.with_name("discipline_verification_KEY.csv")
+    if reuse and key_path.exists():
+        # Redrawing after a taxonomy change would orphan coding already done,
+        # because the stratification is by predicted field. Keep the same
+        # projects and refresh only what the model now says about them.
+        prev = pd.read_csv(key_path)[["sample_id", "project_id"]]
+        sample = prev.merge(pool, on="project_id", how="left")
+        missing = int(sample.model_field.isna().sum())
+        print(f"  --reuse-sample: kept the {len(prev)} projects already coded"
+              + (f", {missing} no longer model-assigned" if missing else ""))
+        sample = sample[sample.model_field.notna()].reset_index(drop=True)
+    else:
+        rng = np.random.RandomState(SEED)
+        sample = stratified_sample(pool, min(n, len(pool)), ["tier", "model_field"], rng)
+        sample.insert(0, "sample_id", [f"V{i:03d}" for i in range(1, len(sample) + 1)])
+
     sheet.parent.mkdir(parents=True, exist_ok=True)
-    write_coding_sheet(sample, classes, sheet)
+    if not reuse:
+        write_coding_sheet(sample, classes, sheet)
     key = sample[["sample_id", "project_id", "tier", "model_field",
                   "model_confidence", "model_second_field",
                   "model_second_confidence"]]
@@ -319,6 +378,9 @@ def build_verification_sample(labelled, proj, classes, n):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--crosswalk", choices=["james", "kirsty", "merged10"],
+                    default="james",
+                    help="which crosswalk variant's gold set and folds to use")
     ap.add_argument("--suffix", default="_mpnet")
     ap.add_argument("--target-accuracy", type=float, default=0.80,
                     help="accuracy the retained tier 2 predictions must reach")
@@ -329,12 +391,22 @@ def main() -> None:
     ap.add_argument("--weight", type=int, default=None,
                     help="CE upweighting factor; omit to select by inner CV")
     ap.add_argument("--sample-size", type=int, default=100)
+    ap.add_argument("--proba-only", action="store_true",
+                    help="skip the out-of-fold work, reuse the threshold already "
+                         "in threshold_summary.json, refit once and write the "
+                         "full field probability matrix. About three minutes.")
+    ap.add_argument("--reuse-sample", action="store_true",
+                    help="keep the projects already in "
+                         "discipline_verification_KEY.csv and rewrite only the "
+                         "model's answers for them, instead of drawing a fresh "
+                         "sample. Use this after changing the taxonomy so the "
+                         "coding you have already done stays valid.")
     ap.add_argument("--sample-only", action="store_true",
                     help="regenerate just the verification sheet from an "
                          "existing projects_labelled_final.csv, without "
                          "refitting anything")
     args = ap.parse_args()
-    sfx = args.suffix
+    sfx, VARIANT = args.suffix, args.crosswalk
     RESULTS.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
@@ -361,7 +433,8 @@ def main() -> None:
               f"nothing refitted")
         build_verification_sample(pd.read_csv(final),
                                   pd.read_csv(PROJECTS, low_memory=False),
-                                  classes, args.sample_size)
+                                  classes, args.sample_size,
+                                  reuse=args.reuse_sample)
         return
 
     # --- features -----------------------------------------------------------
@@ -427,59 +500,60 @@ def main() -> None:
     Zg, Zu = vec.transform(gold_text), vec.transform(utext)
     print(f"  {Zc.shape[1]} features ({time.time() - t0:.0f}s)")
 
-    weight = args.weight
-    if weight is None:
-        print("\nselecting the CE upweighting factor by inner cross-validation")
-        weight = choose_weight(Xc, yc, Xg, y)
-
-    # --- 1. out-of-fold predictions from H ----------------------------------
-    print(f"\nout-of-fold predictions from set-up H (weight x{weight})")
-    oof = []
-    for fold in folds:
-        tr = [loc[p] for p in fold["train"]]
-        te = [loc[p] for p in fold["test"]]
-        emb, tfidf = fit_h(Xc, yc, Zc, Xg[tr], y[tr], Zg[tr], weight)
-        pred, conf, _ = predict_h(emb, tfidf, Xg[te], Zg[te])
-        oof.append(pd.DataFrame(dict(split=fold["split"],
-                                     project_id=gold.project_id.values[te],
-                                     true_field=y[te], pred_field=pred,
-                                     confidence=conf)))
-        print(f"  split {fold['split']:2d} done [{time.time() - t0:.0f}s]", flush=True)
-    oof = pd.concat(oof, ignore_index=True)
-    oof["correct"] = oof.pred_field == oof.true_field
-    oof.to_csv(RESULTS / "oof_predictions_H.csv", index=False)
-    print(f"  overall out-of-fold accuracy {oof.correct.mean():.3f}, "
-          f"macro-F1 {f1_score(oof.true_field, oof.pred_field, average='macro'):.3f}")
-
-    # --- 2. threshold -------------------------------------------------------
-    curve = accuracy_reject_curve(oof.confidence.values, oof.correct.values)
-    curve.to_csv(RESULTS / "accuracy_reject_curve.csv", index=False)
-    print("\naccuracy-reject curve, at selected coverage points")
-    for cov in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
-        r = curve.iloc[(curve.coverage - cov).abs().argmin()]
-        print(f"  coverage {r.coverage:.2f}  threshold {r.threshold:.3f}  "
-              f"accuracy {r.accuracy:.3f}")
-
-    chosen = pick_threshold(curve, args.target_accuracy, args.min_coverage)
-    if chosen is None:
-        best = curve[curve.coverage >= args.min_coverage].accuracy.max()
-        sys.exit(f"\nNo threshold reaches {args.target_accuracy:.0%} accuracy at "
-                 f"{args.min_coverage:.0%} coverage. The best available is "
-                 f"{best:.3f}. Lower --target-accuracy and rerun, and say in the "
-                 f"methodology that the target was revised and why.")
-    tau = float(chosen.threshold)
-    lo, hi = wilson(int(chosen.n_correct), int(chosen.n_retained))
-    print(f"\nthreshold {tau:.3f} for a {args.target_accuracy:.0%} target")
-    print(f"  retained {int(chosen.n_retained)}/{len(oof)} out-of-fold "
-          f"({chosen.coverage:.1%}), accuracy {chosen.accuracy:.3f} "
-          f"[{lo:.3f}, {hi:.3f}]")
-    below = oof[oof.confidence < tau]
-    print(f"  below the threshold: accuracy {below.correct.mean():.3f} on {len(below)}")
+    if args.proba_only:
+        # Both the threshold and the weight come from the recorded run, so the
+        # inner cross-validation is skipped entirely rather than run and then
+        # discarded.
+        summ = json.load(open(RESULTS / "threshold_summary.json"))
+        tau, weight = float(summ["threshold"]), int(summ["weight"])
+        oof = chosen = below = lo = hi = None
+        print(f"\n--proba-only: reusing threshold {tau:.3f} and weight x{weight} "
+              f"from threshold_summary.json, refitting once")
+    else:
+        weight = args.weight
+        if weight is None:
+            print("\nselecting the CE upweighting factor by inner cross-validation")
+            weight = choose_weight(Xc, yc, Xg, y)
+        oof, curve, chosen, tau, lo, hi, below = _oof_and_threshold(
+            folds, loc, gold, y, Xc, yc, Zc, Xg, Zg, weight, args, t0)
 
     # --- 3. final model and labels ------------------------------------------
     print("\nrefitting H on the corpus plus the whole gold set")
     emb, tfidf = fit_h(Xc, yc, Zc, Xg, y, Zg, weight)
     pred, conf, proba = predict_h(emb, tfidf, Xu, Zu)
+
+    # The full probability vector, not just the winner. RQ3 is a distributional
+    # question, and soft counting (adding each project's probability to every
+    # field) halves the error of hard assignment on the gold set: total
+    # variation 0.044 against 0.091, and Engineering's 6.3-point overstatement
+    # falls to 0.5. Hard labels stay for anything needing one answer per
+    # project; the matrix is what the distribution should be built from.
+    known = proj[proj.funder_field.notna()]
+    # Columns cover every field with evidence behind it, not just the twelve the
+    # model can predict. The funder-labelled projects in rare classes are known
+    # facts, and dropping them because the classifier cannot reach those classes
+    # would quietly delete real observations from the distribution.
+    extra = sorted(set(known.funder_field.dropna()) - set(emb.classes_))
+    cols = list(emb.classes_) + extra
+    if extra:
+        print(f"  including {len(extra)} funder-only fields with no model column: "
+              f"{extra}")
+
+    proba_frame = pd.DataFrame(0.0, index=range(len(unlabelled)), columns=cols)
+    proba_frame.loc[:, list(emb.classes_)] = proba
+    proba_frame.insert(0, "project_id", unlabelled.project_id.values)
+
+    onehot = pd.DataFrame(0.0, index=range(len(known)), columns=cols)
+    for i, f in enumerate(known.funder_field.values):
+        onehot.iloc[i, onehot.columns.get_loc(f)] = 1.0
+    onehot.insert(0, "project_id", known.project_id.values)
+
+    full = pd.concat([onehot, proba_frame], ignore_index=True)
+    full.to_csv(DIR / "project_field_probabilities.csv", index=False)
+    mass = full[cols].to_numpy().sum()
+    print(f"  wrote project_field_probabilities.csv: {len(full)} projects x "
+          f"{len(cols)} fields, total mass {mass:.1f} (should equal {len(full)})")
+
     order = np.argsort(-proba, axis=1)
     unlabelled["model_field"] = pred
     unlabelled["model_confidence"] = conf
@@ -509,7 +583,7 @@ def main() -> None:
     print("\nfield distribution")
     print(labelled.field.value_counts().to_string())
 
-    summary = dict(
+    summary = None if args.proba_only else dict(
         variant=VARIANT, setup="H", weight=int(weight),
         target_accuracy=args.target_accuracy, min_coverage=args.min_coverage,
         threshold=round(tau, 4),
@@ -524,12 +598,17 @@ def main() -> None:
         below_threshold_n=int(len(below)),
         tier_counts={int(k): int(v) for k, v in labelled.tier.value_counts().items()},
         n_projects=int(len(labelled)), n_classes=len(classes))
-    json.dump(summary, open(RESULTS / "threshold_summary.json", "w"), indent=2)
+    if not args.proba_only:
+        json.dump(summary, open(RESULTS / "threshold_summary.json", "w"), indent=2)
 
     # --- 4. blind verification sample ---------------------------------------
-    build_verification_sample(labelled, proj, classes, args.sample_size)
-    print(f"\nWrote {out.name}, oof_predictions_H.csv, accuracy_reject_curve.csv, "
-          f"threshold_summary.json. Total {time.time() - t0:.0f}s.")
+    build_verification_sample(labelled, proj, classes, args.sample_size,
+                              reuse=args.reuse_sample)
+    written = [out.name, "project_field_probabilities.csv"]
+    if not args.proba_only:
+        written += ["oof_predictions_H.csv", "accuracy_reject_curve.csv",
+                    "threshold_summary.json"]
+    print(f"\nWrote {', '.join(written)}. Total {time.time() - t0:.0f}s.")
 
 
 if __name__ == "__main__":

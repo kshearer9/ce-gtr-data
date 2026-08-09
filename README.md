@@ -132,3 +132,112 @@ Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 python3 -m scripts.cleaning.merge_datasets
 ```
 After completing all steps, cleaned and merged datasets will be available in the `data/cleaned/merged` directory and individual outcome types for OpenAlex including extra metadata are available in 'data/cleaned/outcomes'.
+
+### 13. Build the discipline-classification training corpus
+
+Collects subject-tagged UKRI projects from the wider GtR index, disjoint from the
+CE set, and applies the crosswalk to them.
+
+```bash
+python3 scripts/classification/collect_gtr_tagged_corpus.py
+python3 scripts/classification/apply_crosswalk_to_corpus.py
+```
+
+### 14. Embed projects, publications and the corpus
+
+```bash
+python3 scripts/classification/embed_texts_mpnet.py
+```
+
+`--projects-only` skips publications and corpus. `--no-corpus` re-embeds
+projects and publications only, which is what you want after re-collecting
+outcomes. Both write the row index alongside each array; a stale index against a
+fresh array misaligns every lookup without raising, so downstream scripts refuse
+to run when the two disagree.
+
+### 15. Compare methods and training corpora
+
+Roughly 100 minutes. Rebuilds the gold set and folds from a named crosswalk,
+re-maps the corpus, then runs the method bake-off and set-ups A to H on 25
+frozen splits.
+
+```bash
+python3 scripts/classification/run_variant.py --crosswalk merged10
+python3 scripts/classification/compare_variants.py
+```
+
+### 16. Set the confidence threshold and label every project
+
+Reads the threshold off the accuracy-reject curve against a target declared in
+advance, then labels the 1,341 projects with no funder subject.
+
+```bash
+python3 scripts/classification/apply_classifier.py --crosswalk merged10
+```
+
+Produces `projects_labelled_final.csv` and `project_field_probabilities.csv`.
+
+### 17. Label the publications
+
+```bash
+python3 scripts/classification/label_publications.py
+```
+
+Produces `publications_labelled.csv` and
+`publication_field_probabilities.csv`.
+
+### 18. Evaluate
+
+```bash
+python3 scripts/classification/evaluate_multilabel.py
+python3 scripts/classification/score_verification.py
+python3 scripts/classification/test_soft_counts.py
+python3 scripts/classification/gold_learning_curve.py
+python3 scripts/classification/score_intercoder.py --second data/validation/discipline_coding_SECOND_CODER.xlsx
+```
+
+Details of each, and the figures they produce, are in
+`scripts/classification/README.md`.
+
+---
+
+## Convenience wrappers
+
+The shell scripts in `scripts/` chain the steps above in the right order, with
+the reasoning for each in their headers. Run them from the repository root.
+
+| Script | What it does |
+|---|---|
+| `scripts/run_canonical.sh` | full rebuild from collection through classification |
+| `scripts/run_outcomes.sh` | collect and clean all three bibliometric sources |
+| `scripts/run_rebuild.sh` | re-embed and re-run the classification comparison |
+| `scripts/run_apply.sh` | re-embed, relabel publications, set thresholds and apply |
+| `scripts/run_finish_input.sh` | the variant run plus threshold and application |
+| `scripts/restore_wos.sh` | restore an archived WoS collection and relabel |
+
+---
+
+## Where the reported figures come from
+
+Every number quoted in the methodology traces to a committed file.
+
+| Figure | File |
+|---|---|
+| Set-up comparison, A to H | `data/classification/results/setups_summary_merged10.csv` |
+| Per-split scores, for the paired tests | `data/classification/results/setups_merged10.csv` |
+| Out-of-fold predictions | `data/classification/results/oof_predictions_H.csv` |
+| Accuracy-reject curve and threshold | `data/classification/results/accuracy_reject_curve.csv`, `threshold_summary.json` |
+| Multi-label evaluation | `data/classification/results/multilabel_evaluation.csv` |
+| Learning curve over gold size | `data/classification/results/gold_learning_curve.csv` |
+| Blind verification coding | `data/validation/` |
+
+---
+
+## A note on what this pipeline concluded
+
+Single-label discipline assignment to interdisciplinary research proved
+unreliable at the per-project level, and this was measured against blind human
+coding rather than assumed. The analysis is therefore built from predicted
+probability distributions rather than from hard labels, an approach validated at
+0.73 percentage points mean absolute error per field against 1.51 for hard
+assignment. `scripts/classification/README.md` sets out the evidence.

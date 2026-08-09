@@ -1,0 +1,28 @@
+{
+  "variant": "merged10",
+  "setup": "H",
+  "weight": 100,
+  "target_accuracy": 0.8,
+  "min_coverage": 0.1,
+  "threshold": 0.5819,
+  "oof_folds": 5,
+  "oof_n": 287,
+  "oof_accuracy": 0.7352,
+  "oof_macro_f1": 0.6558,
+  "retained_n": 203,
+  "retained_coverage": 0.7073,
+  "retained_accuracy": 0.803,
+  "retained_ci": [
+    0.7428,
+    0.8518
+  ],
+  "below_threshold_accuracy": 0.5714,
+  "below_threshold_n": 84,
+  "tier_counts": {
+    "2": 724,
+    "3": 617,
+    "1": 299
+  },
+  "n_projects": 1640,
+  "n_classes": 10
+}
