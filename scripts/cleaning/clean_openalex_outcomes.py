@@ -68,14 +68,15 @@ def clean_authors(authors):
             cleaned.append(normalised)
     return "; ".join(cleaned) if cleaned else pd.NA
 
+def extract_openalex_id(url):
+    """
+    Extract the OpenAlex work ID from the OpenAlex URL.
+    """
+    if pd.isna(url):
+        return pd.NA
+    return str(url).rstrip("/").split("/")[-1]
+
 def clean_df(df):
-    # Remove duplicate outcomes
-    if {"project_id", "doi"}.issubset(df.columns):
-        before = len(df)
-        df = df.drop_duplicates(subset=["project_id", "doi"])
-        removed = before - len(df)
-        if removed:
-            print(f"  Removed {removed} duplicate outcomes")
     # Replace missing abstracts with nan
     df = df.replace(TEXT_TO_REPLACE, regex=True)
     df.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
@@ -101,7 +102,9 @@ def main():
     df = convert_to_date(df, *DATE_COLUMNS)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
+    df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id)
     df["authors_clean"] = df["authors"].apply(clean_authors)
+
     output_file = OUTPUT_DIR / "openalex_all_outcomes_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")
 
