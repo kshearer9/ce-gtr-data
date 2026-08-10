@@ -108,8 +108,21 @@ def clean_authors(authors):
             cleaned.append(normalised)
     return "; ".join(cleaned) if cleaned else pd.NA
 
+def clean_scopus_outcome_id(value): 
+    """ Remove the SCOPUS_ID: prefix from a Scopus id. 
+    Example: SCOPUS_ID:85162786723 -> 85162786723 """ 
+    if pd.isna(value): 
+        return pd.NA 
+    value = str(value).strip() 
+    if value.upper().startswith("SCOPUS_ID:"): 
+        value = value[10:] 
+    return value
+
 def clean_df(df):
     removed_dupes = pd.DataFrame
+    # Remove SCOPUS_ID: prefix
+    if "outcome_id" in df.columns: 
+        df["outcome_id"] = df["outcome_id"].apply(clean_scopus_outcome_id)
     # Remove duplicate project-outcome matches
     if {"project_id", "outcome_id"}.issubset(df.columns):
         before = len(df)
