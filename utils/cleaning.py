@@ -88,11 +88,19 @@ def convert_to_category(df, *cols):
 
 def convert_to_date(df, *cols):
     """
-    Convert Unix timestamps in milliseconds to pandas datetime format.
+    Convert Unix timestamps in milliseconds to calendar dates.
     """
     for col in cols:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
+            df[col] = (
+                pd.to_datetime(
+                    df[col],
+                    unit="ms",
+                    errors="coerce",
+                    utc=True
+                )
+                .dt.date
+            )
     return df
 
 
