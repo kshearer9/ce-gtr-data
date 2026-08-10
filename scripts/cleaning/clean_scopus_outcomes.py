@@ -43,7 +43,7 @@ STRING_COLUMNS = [
     "grant_reference",
     "doi",
     "eid",
-    "scopus_id",
+    "outcome_id",
     "journal",
     "volume",
     "issue",
@@ -111,12 +111,12 @@ def clean_authors(authors):
 def clean_df(df):
     removed_dupes = pd.DataFrame
     # Remove duplicate project-outcome matches
-    if {"project_id", "scopus_id"}.issubset(df.columns):
+    if {"project_id", "outcome_id"}.issubset(df.columns):
         before = len(df)
         # Keep the duplicates that will be removed
-        removed_dupes = df[df.duplicated(subset=["project_id", "scopus_id"], keep="first")]
+        removed_dupes = df[df.duplicated(subset=["project_id", "outcome_id"], keep="first")]
         # Keep only the first occurrence
-        df = df.drop_duplicates(subset=["project_id", "scopus_id"])
+        df = df.drop_duplicates(subset=["project_id", "outcome_id"])
         removed = before - len(df)
         if removed:
             print(f"  Removed {removed} duplicate outcomes")
@@ -160,14 +160,14 @@ def main():
     print(f"Saved          : {output_file.name}")
     print("=" * 40)
 
-    duplicate_keys = duplicate_rows[["project_id", "scopus_id"]]
+    duplicate_keys = duplicate_rows[["project_id", "outcome_id"]]
 
     inst_file = INPUT_DIR / "scopus_outcomes_institutions_latest.csv"
     if inst_file.exists():
         inst_df = pd.read_csv(inst_file, encoding="utf-8")
         # Remove the same duplicates
         inst_df = inst_df.merge(duplicate_keys,
-            on=["project_id", "scopus_id"],
+            on=["project_id", "outcome_id"],
             how="left", indicator=True)
         inst_df = inst_df[inst_df["_merge"] == "left_only"].drop(
             columns="_merge")
@@ -189,12 +189,12 @@ def main():
         ref_df = pd.read_csv(ref_file, encoding="utf-8")
         # Temporarily rename columns to remove duplicates
         ref_df = ref_df.merge(duplicate_keys,
-            left_on=["citing_project_id", "citing_scopus_id"],
-            right_on=["project_id", "scopus_id"],
+            left_on=["citing_project_id", "citing_outcome_id"],
+            right_on=["project_id", "outcome_id"],
             how="left", indicator=True)
         ref_df = ref_df[ref_df["_merge"] == "left_only"
                         ].drop(
-                            columns=["project_id", "scopus_id", "_merge"])
+                            columns=["project_id", "outcome_id", "_merge"])
         ref_df = convert_to_category(ref_df, "city", "country")
         ref_df = convert_to_numeric(ref_df, "cited_year")
         ref_df = clean_text_columns(ref_df, "citing_title", "cited_title")
