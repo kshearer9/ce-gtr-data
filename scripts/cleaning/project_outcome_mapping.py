@@ -261,105 +261,94 @@ def build_final_dataframe(gtr_df, new_openalex_rows):
 
 
 def print_match_summary(
-    original_gtr_count,
-    original_openalex_count,
-    original_scopus_count,
-    matched_openalex_indices,
-    matched_scopus_indices,
-    new_openalex_rows,
-    new_scopus_rows,
+    original_counts,
+    match_results,
     final_result
 ):
     """
     Print a summary of the merge.
     """
 
-    openalex_matches = len(matched_openalex_indices)
-    openalex_added = len(new_openalex_rows)
-
-    scopus_matches = len(matched_scopus_indices)
-    scopus_added = len(new_scopus_rows)
-
-    final_count = len(final_result)
-
     print()
+    print("=" * 70)
     print("MERGE SUMMARY")
-    print("=" * 50)
-    print(f"Original GTR outcomes        : {original_gtr_count}")
-    print(f"Original OpenAlex outcomes   : {original_openalex_count}")
-    print(f"Original Scopus outcomes     : {original_scopus_count}")
+    print("=" * 70)
 
-    print()
-    print(f"OpenAlex matched to existing : {openalex_matches}")
-    print(f"New OpenAlex outcomes added  : {openalex_added}")
+    # ------------------------------------------------------------------
+    # Original database counts
+    # ------------------------------------------------------------------
 
-    print()
-    print(f"Scopus matched to existing   : {scopus_matches}")
-    print(f"New Scopus outcomes added    : {scopus_added}")
+    print("\nORIGINAL OUTCOMES")
+    print("-" * 70)
 
-    print()
-    print(f"Final total outcomes         : {final_count}")
+    for source, count in original_counts.items():
+        print(f"{source:<15}: {count:>8,}")
 
-    print()
-    print("MATCH TYPE")
-    print("=" * 50)
-    print(
-        f"Title                       : "
-        f"{(final_result['match_basis'] == 'title').sum()}"
-    )
+    # ------------------------------------------------------------------
+    # Matching results
+    # ------------------------------------------------------------------
 
-    print(
-        f"Description                 : "
-        f"{(final_result['match_basis'] == 'description').sum()}"
-    )
+    print("\nMATCHING RESULTS")
+    print("-" * 70)
 
-    print(
-        f"Impact                      : "
-        f"{(final_result['match_basis'] == 'impact').sum()}"
-    )
+    for source, results in match_results.items():
+        matched = len(results["matched"])
+        added = len(results["added"])
+        original = original_counts[source]
 
-    print(
-        f"Other                       : "
-        f"{(final_result['match_basis'] == 'other').sum()}"
-    )
+        print(
+            f"{source:<15}: "
+            f"{matched:>8,} matched | "
+            f"{added:>8,} added"
+        )
 
-    print()
-    print("SOURCE")
-    print("=" * 50)
-    print(
-        f"GTR only                    : "
-        f"{(final_result['source'] == 'gtr').sum()}"
-    )
+    # ------------------------------------------------------------------
+    # Final count
+    # ------------------------------------------------------------------
 
-    print(
-        f"GTR + OpenAlex              : "
-        f"{(final_result['source'] == 'gtr; openalex').sum()}"
-    )
+    print("\nFINAL DATASET")
+    print("-" * 70)
+    print(f"{'Total outcomes':<15}: {len(final_result):>8,}")
 
-    print(
-        f"GTR + Scopus                : "
-        f"{(final_result['source'] == 'gtr; scopus').sum()}"
-    )
+    # ------------------------------------------------------------------
+    # Match basis
+    # ------------------------------------------------------------------
 
-    print(
-        f"GTR + OpenAlex + Scopus     : "
-        f"{(final_result['source'] == 'gtr; openalex; scopus').sum()}"
-    )
+    print("\nMATCH BASIS")
+    print("-" * 70)
 
-    print(
-        f"OpenAlex only               : "
-        f"{(final_result['source'] == 'openalex').sum()}"
-    )
+    if "match_basis" in final_result.columns:
+        match_basis_counts = (
+            final_result["match_basis"]
+            .fillna("unknown")
+            .value_counts()
+        )
 
-    print(
-        f"OpenAlex + Scopus           : "
-        f"{(final_result['source'] == 'openalex; scopus').sum()}"
-    )
+        for basis, count in match_basis_counts.items():
+            print(f"{basis:<15}: {count:>8,}")
 
-    print(
-        f"Scopus only                 : "
-        f"{(final_result['source'] == 'scopus').sum()}"
-    )
+    # ------------------------------------------------------------------
+    # Source combinations
+    # ------------------------------------------------------------------
+
+    print("\nSOURCE COVERAGE")
+    print("-" * 70)
+
+    if "source" in final_result.columns:
+
+        source_counts = (
+            final_result["source"]
+            .fillna("")
+            .value_counts()
+        )
+
+        for source_combination, count in source_counts.items():
+            print(
+                f"{source_combination:<35}: "
+                f"{count:>8,}"
+            )
+
+    print("=" * 70)
 
 
 # ---------------------------------------------------------------------------
@@ -370,25 +359,32 @@ def main():
     gtr_file = INPUT_DIR / "gtr_all_outcomes_clean.csv"
     openalex_file = INPUT_DIR / "openalex_all_outcomes_clean.csv"
     scopus_file = INPUT_DIR / "scopus_all_outcomes_clean.csv"
+    wos_file = INPUT_DIR / "wos_all_outcomes_clean.csv"
 
     # Read data
     gtr_df = pd.read_csv(gtr_file, encoding = "utf-8")
     openalex_df = pd.read_csv(openalex_file, encoding = "utf-8")
     scopus_df = pd.read_csv(scopus_file, encoding = "utf-8")
+    wos_df = pd.read_csv(wos_file, encoding = "utf-8")
 
-    original_gtr_count = len(gtr_df)
-    original_openalex_count = len(openalex_df)
-    original_scopus_count = len(scopus_df)
+    original_counts = {
+        "gtr": len(gtr_df),
+        "openalex": len(openalex_df),
+        "scopus": len(scopus_df),
+        "wos": len(wos_df),
+    }
 
     # Prepare data
     gtr_df = prepare_dataframe(gtr_df, "description_clean", "gtr")
-    openalex_df = prepare_dataframe(openalex_df, "abstract", "openalex")
-    scopus_df = prepare_dataframe(scopus_df, "abstract", "scopus")
+    openalex_df = prepare_dataframe(openalex_df, "abstract_clean", "openalex")
+    scopus_df = prepare_dataframe(scopus_df, "abstract_clean", "scopus")
+    wos_df = prepare_dataframe(wos_df, "abstract_clean", "wos")
 
     # Create match keys
     gtr_df = create_match_keys(gtr_df)
     openalex_df = create_match_keys(openalex_df)
     scopus_df = create_match_keys(scopus_df)
+    wos_df = create_match_keys(wos_df)
 
     # Add GTR metadata
     gtr_df = add_gtr_metadata(gtr_df)
@@ -407,15 +403,52 @@ def main():
         scopus_new = pd.DataFrame(new_scopus_rows)
         final_result = pd.concat([final_result, scopus_new], ignore_index=True)
 
-    # Print summary
+    # Add WoS records
+    final_result, matched_wos_indices, new_wos_rows = (find_external_matches(
+        final_result, wos_df, "wos"))
+    if new_wos_rows:
+        wos_new = pd.DataFrame(new_wos_rows)
+        final_result = pd.concat([final_result, wos_new], ignore_index=True)
+
+    match_results = {
+        "openalex": {
+            "matched": matched_openalex_indices,
+            "added": new_openalex_rows,
+        },
+        "scopus": {
+            "matched": matched_scopus_indices,
+            "added": new_scopus_rows,
+        },
+        "wos": {
+            "matched": matched_wos_indices,
+            "added": new_wos_rows,
+        },
+    }
+
+    # TESTING 
+    wos_unusable = wos_df[
+        wos_df["title_clean_for_match"].eq("")
+        & wos_df["description_for_match"].eq("")
+    ]
+
+    print("\nWoS records with no title or description:")
+    print(len(wos_unusable))
+
+    if len(wos_unusable):
+        print(
+            wos_unusable[
+                [
+                    "project_id",
+                    "outcome_id",
+                    "title_clean",
+                    "abstract_clean",
+                ]
+            ].to_string(index=False)
+        )
+
     print_match_summary(
-        original_gtr_count,
-        original_openalex_count,
-        original_scopus_count,
-        matched_openalex_indices,
-        matched_scopus_indices,
-        new_openalex_rows,
-        new_scopus_rows,
+        original_counts,
+        match_results,
         final_result
     )
 
