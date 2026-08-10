@@ -96,10 +96,10 @@ def add_gtr_metadata(gtr_df):
     Every GTR outcome is retained.
     match_basis means which field is available
     for matching:
-    title
-    description
-    impact
-    other
+        title
+        description
+        impact
+        other
     """
     gtr_df = gtr_df.copy()
     gtr_df["source"] = "gtr"
@@ -268,86 +268,49 @@ def print_match_summary(
     """
     Print a summary of the merge.
     """
-
     print()
     print("=" * 70)
     print("MERGE SUMMARY")
     print("=" * 70)
 
-    # ------------------------------------------------------------------
     # Original database counts
-    # ------------------------------------------------------------------
-
     print("\nORIGINAL OUTCOMES")
     print("-" * 70)
-
     for source, count in original_counts.items():
         print(f"{source:<15}: {count:>8,}")
 
-    # ------------------------------------------------------------------
     # Matching results
-    # ------------------------------------------------------------------
-
     print("\nMATCHING RESULTS")
     print("-" * 70)
-
     for source, results in match_results.items():
         matched = len(results["matched"])
         added = len(results["added"])
-        original = original_counts[source]
+        print(f"{source:<15}: "
+              f"{matched:>8,} matched | "
+              f"{added:>8,} added")
 
-        print(
-            f"{source:<15}: "
-            f"{matched:>8,} matched | "
-            f"{added:>8,} added"
-        )
-
-    # ------------------------------------------------------------------
     # Final count
-    # ------------------------------------------------------------------
-
     print("\nFINAL DATASET")
     print("-" * 70)
     print(f"{'Total outcomes':<15}: {len(final_result):>8,}")
 
-    # ------------------------------------------------------------------
     # Match basis
-    # ------------------------------------------------------------------
-
     print("\nMATCH BASIS")
     print("-" * 70)
-
     if "match_basis" in final_result.columns:
-        match_basis_counts = (
-            final_result["match_basis"]
-            .fillna("unknown")
-            .value_counts()
-        )
-
+        match_basis_counts = (final_result["match_basis"].fillna("unknown")
+                              .value_counts())
         for basis, count in match_basis_counts.items():
             print(f"{basis:<15}: {count:>8,}")
 
-    # ------------------------------------------------------------------
     # Source combinations
-    # ------------------------------------------------------------------
-
     print("\nSOURCE COVERAGE")
     print("-" * 70)
-
     if "source" in final_result.columns:
-
-        source_counts = (
-            final_result["source"]
-            .fillna("")
-            .value_counts()
-        )
-
+        source_counts = (final_result["source"].fillna("").value_counts())
         for source_combination, count in source_counts.items():
-            print(
-                f"{source_combination:<35}: "
-                f"{count:>8,}"
-            )
-
+            print(f"{source_combination:<35}: "
+                  f"{count:>8,}")
     print("=" * 70)
 
 
@@ -424,27 +387,6 @@ def main():
             "added": new_wos_rows,
         },
     }
-
-    # TESTING 
-    wos_unusable = wos_df[
-        wos_df["title_clean_for_match"].eq("")
-        & wos_df["description_for_match"].eq("")
-    ]
-
-    print("\nWoS records with no title or description:")
-    print(len(wos_unusable))
-
-    if len(wos_unusable):
-        print(
-            wos_unusable[
-                [
-                    "project_id",
-                    "outcome_id",
-                    "title_clean",
-                    "abstract_clean",
-                ]
-            ].to_string(index=False)
-        )
 
     print_match_summary(
         original_counts,
