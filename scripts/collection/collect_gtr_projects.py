@@ -11,7 +11,7 @@ Method: a two-stage protocol following systematic-review conventions (PRISMA
   Stage 1 - IDENTIFICATION
     Broad keyword search against the GtR projects API using terms grounded in
     Kirchherr, Reike & Hekkert (2017) and the Ellen MacArthur Foundation
-    Circular Economy Glossary (2021).
+    Circular Economy Glossary (2026).
 
   Stage 2 - SCREENING
     Each project is classified against a three-tier inclusion rule
@@ -211,7 +211,7 @@ MASTER_COLS = [
 # These are essentially unique to circular economy discourse. The set is
 # deliberately aligned with the Stage 1 search terms (a term reliable enough to
 # search on is reliable enough to include on), plus two equally-specific terms
-# (cradle-to-cradle, reverse logistics) that the EMF glossary defines. The
+# (cradle-to-cradle, reverse logistics) that the EMF glossary (2026) defines. The
 # "circular <X> economy" patterns capture domain-qualified variants such as
 # "circular textile economy" or "circular plastics economy", which name the
 # concept just as explicitly as the bare phrase.
@@ -228,7 +228,7 @@ TIER1_PATTERNS = [
 ]
 
 # Tier 2 - CHARACTERISTIC terms. Two or more DISTINCT matches are required for
-# inclusion. These are genuine CE concepts (Kirchherr 2017; EMF glossary 2021)
+# inclusion. These are genuine CE concepts (Kirchherr 2017; EMF glossary 2026)
 # that nonetheless see some cross-domain use, so a single occurrence is not
 # decisive but two independent ones are. This list was purified iteratively:
 # terms that proved too ambiguous on inspection (closed-loop -> control
@@ -249,10 +249,11 @@ TIER2_PATTERNS = [
 ]
 
 # Tier 3 - SUPPLEMENTARY terms. These never trigger inclusion on their own,
-# however many match. They are the lowest-value, most cross-domain-ambiguous
-# strategies: the literature itself ranks recycling/recovery as "last resort"
-# and states that "a firm merely focusing on recycling is not circular"
-# (Kirchherr 2017; EMF glossary 2021). A Tier 3 term counts only when it
+# however many match. They are the terms with the widest currency outside the
+# field, so a match carries the least evidential weight. The literature places
+# recycling as a last-resort action (EMF glossary 2026) and holds that a firm
+# focused on recycling alone is not circular (Kirchherr 2017). A Tier 3 term
+# counts only when it
 # corroborates at least one Tier 2 term (see classify_ce). The demoted
 # ambiguous terms (closed-loop, repurpose, anaerobic digestion) live here.
 TIER3_PATTERNS = [
@@ -381,9 +382,9 @@ def classify_ce(title, abstract, tech_abstract="", potential_impact=""):
                 OR  (>=1 Tier 2 term AND >=1 Tier 3 term)
 
     Tier 3 terms never trigger inclusion alone, however many match; they only
-    corroborate a Tier 2 term. This encodes the literature's position that the
-    lowest-value strategies (recycling, recovery, reuse, repair) do not by
-    themselves constitute circular economy.
+    corroborate a Tier 2 term. This encodes the literature's position that
+    recycling, recovery, reuse and repair do not by themselves constitute
+    circular economy.
 
     Returns:
         include (bool): True if the project passes Stage 2 screening
