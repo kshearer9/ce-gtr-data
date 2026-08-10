@@ -108,8 +108,8 @@ for d in (RAW_DIR, PROC_DIR, CACHE_DIR, CKPT_DIR):
 INPUT_CANDIDATES = [
     CLEAN_INPUT_DIR / "merged" / "projects.csv",
     CLEAN_INPUT_DIR / "gtr_projects_clean.csv",
-    CLEAN_INPUT_DIR / "merged" / "projects_-_cleaned.csv",
-    CLEAN_INPUT_DIR / "merged" / "projects_cleaned.csv",
+    CLEAN_INPUT_DIR / "merged" / "projects.csv",
+    CLEAN_INPUT_DIR / "merged" / "projects.csv",
     PROC_INPUT_DIR / "gtr_ce_projects_enriched_clean.csv",
     DATA_DIR / "processed" / "gtr_ce_projects_enriched_clean.csv",
 ]

@@ -70,7 +70,7 @@ COUNCIL_REF_PATTERN = re.compile(r"^[A-Z]{2}/[A-Z0-9]{7}/\d+$")
 # Default input: the enriched, cleaned project dataset. grant_reference is 100%
 # populated here. (Kirsty's merged projects_-_cleaned.csv carries the same column
 # and can be swapped in once it is the canonical input.)
-DEFAULT_INPUT = Path("data/cleaned/merged/projects_-_cleaned.csv")
+DEFAULT_INPUT = Path("data/cleaned/merged/projects.csv")
 # Fallback for local runs before the merge lands / if the path differs.
 FALLBACK_INPUTS = [
     Path("data/processed/gtr_ce_projects_enriched_clean.csv"),
