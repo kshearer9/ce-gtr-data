@@ -117,20 +117,9 @@ def add_gtr_metadata(gtr_df):
         "match_basis"
     ] = "description"
 
-    # Impact fallback
-    has_impact = (
-        gtr_df["impact_clean"].notna()
-        & gtr_df["impact_clean"].astype(str).str.strip().ne("")
-    )
-
+    # Everything else
     gtr_df.loc[
-        ~has_title & ~has_description & has_impact,
-        "match_basis"
-    ] = "impact"
-
-    # Other
-    gtr_df.loc[
-        ~has_title & ~has_description & ~has_impact,
+        ~has_title & ~has_description,
         "match_basis"
     ] = "other"
 
@@ -398,21 +387,13 @@ def main():
     output_columns = [
         "gtr_outcome_id",
         "openalex_outcome_id",
+        "wos_outcome_id",
+        "scopus_outcome_id",
         "project_id",
-        "title_clean",
-        "description_clean",
-        "impact_clean",
-        "type",
-        "doi",
-        "author_clean",
-        "organisations",
-        "year",
-        "url",
         "match_basis",
         "source"
     ]
 
-    # Only keep columns that actually exist
     output_columns = [
         column
         for column in output_columns
@@ -426,6 +407,57 @@ def main():
 
     print()
     print(f"Saved project-outcome map to: {output_file}")
+
+    # Final checks
+    # Treat blank strings and whitespace as missing
+    for column in [
+        "project_id",
+        "gtr_outcome_id",
+        "openalex_outcome_id",
+        "scopus_outcome_id",
+        "wos_outcome_id",
+    ]:
+        if column in final_result.columns:
+            final_result[column] = (
+                final_result[column]
+                .replace(r"^\s*$", pd.NA, regex=True)
+            )
+
+    # Check for missing project IDs
+    missing_project = final_result["project_id"].isna()
+
+    # Check for rows where ALL outcome IDs are missing
+    outcome_columns = [
+        "gtr_outcome_id",
+        "openalex_outcome_id",
+        "scopus_outcome_id",
+        "wos_outcome_id",
+    ]
+
+    missing_all_outcomes = (
+        final_result[outcome_columns]
+        .isna()
+        .all(axis=1)
+    )
+
+    # Warnings
+    if missing_project.any():
+        print(
+            f"\nWARNING: {missing_project.sum():,} rows "
+            "have no project_id."
+        )
+
+    if missing_all_outcomes.any():
+        print(
+            f"WARNING: {missing_all_outcomes.sum():,} rows "
+            "have no outcome ID from any source."
+        )
+
+    if not missing_project.any() and not missing_all_outcomes.any():
+        print(
+            "\nOK: Every row has a project_id and "
+            "at least one outcome ID."
+        )
 
 
 if __name__ == "__main__":
