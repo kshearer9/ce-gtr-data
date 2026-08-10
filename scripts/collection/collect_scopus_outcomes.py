@@ -134,7 +134,7 @@ KEEP_COLUMNS = {
     "abstracts-retrieval-response.coredata.dc:description": "abstract",
     "abstracts-retrieval-response.coredata.prism:doi": "doi",
     "abstracts-retrieval-response.coredata.eid": "eid",
-    "abstracts-retrieval-response.coredata.dc:identifier": "scopus_id",
+    "abstracts-retrieval-response.coredata.dc:identifier": "outcome_id",
     "abstracts-retrieval-response.coredata.pubmed-id": "pubmed_id",
     "abstracts-retrieval-response.coredata.prism:publicationName": "journal",
     "abstracts-retrieval-response.coredata.prism:coverDate": "publication_date",
@@ -293,7 +293,7 @@ def parse_authors(authors):
     return {"authors": "; ".join(names)}
 
 
-def parse_institutions(institutions, eid=None, scopus_id=None, doi=None, project_id=None):
+def parse_institutions(institutions, eid=None, outcome_id=None, doi=None, project_id=None):
     """
     Returns institution names as a semicolon-separated string.
     Also saves a separate scopus_institutions.csv table.
@@ -315,7 +315,7 @@ def parse_institutions(institutions, eid=None, scopus_id=None, doi=None, project
             aff_names.append(institution)
         institution_rows.append({
             "project_id": project_id,
-            "scopus_id": scopus_id,
+            "outcome_id": outcome_id,
             "eid": eid,
             "doi": doi,
             "institution": institution,
@@ -363,7 +363,7 @@ def parse_keywords(indexed_keywords):
 
 def clean_df(df, timestamp):
     # Standardise Scopus identifier format
-    df["scopus_id"] = df["scopus_id"].str.replace("SCOPUS_ID:", "", regex=False)
+    df["outcome_id"] = df["outcome_id"].str.replace("OUTCOME_ID:", "", regex=False)
 
     # Flatten nested author information
     if "authors" in df.columns:
@@ -376,7 +376,7 @@ def clean_df(df, timestamp):
         parsed_aff = (df.apply(
             lambda row: parse_institutions(row["institutions"],
                                            eid=row["eid"],
-                                           scopus_id=row["scopus_id"],
+                                           outcome_id=row["outcome_id"],
                                            doi=row["doi"], 
                                            project_id=row["project_id"]), axis=1))
         df["institutions"] = parsed_aff.apply(lambda x: x["institutions"])
@@ -464,7 +464,7 @@ def save_references(df):
             citations.append({
                 # citing paper
                 "citing_project_id": row.get("project_id"),
-                "citing_scopus_id": row.get("scopus_id"),
+                "citing_outcome_id": row.get("outcome_id"),
                 "citing_grant_reference": row.get("grant_reference"),
                 "citing_eid": row.get(
                     "abstracts-retrieval-response.coredata.eid"),

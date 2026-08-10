@@ -42,7 +42,7 @@ for d in (INPUT_DIR, OUTPUT_DIR):
 STRING_COLUMNS = [
     "project_id",
     "grant_reference",
-    "wos_uid",
+    "outcome_id",
     "doi",
     "issn",
     "eissn",
@@ -117,17 +117,33 @@ def clean_authors(authors):
             cleaned.append(normalised)
     return "; ".join(cleaned) if cleaned else pd.NA
 
+def clean_wos_outcome_id(value): 
+    """ Remove the WOS: prefix from a WoS UID. 
+    Example: WOS:001794901400001 -> 001794901400001 """ 
+    if pd.isna(value): 
+        return pd.NA 
+    value = str(value).strip() 
+    if value.upper().startswith("WOS:"): 
+        value = value[4:] 
+    return value
+
 
 def clean_df(df):
     removed_dupes = pd.DataFrame()
+    # Rename Wos UID to outcome_id
+    if "wos_uid" in df.columns: 
+        df = df.rename(columns={"wos_uid": "outcome_id"})
+    # Remove WOS: prefix
+    if "outcome_id" in df.columns: 
+        df["outcome_id"] = df["outcome_id"].apply(clean_wos_outcome_id)
     # Remove duplicate project-outcome matches
-    if {"project_id", "wos_uid"}.issubset(df.columns):
+    if {"project_id", "outcome_id"}.issubset(df.columns):
         before = len(df)
         # Keep the duplicates that will be removed
-        removed_dupes = df[df.duplicated(subset=["project_id", "wos_uid"],
+        removed_dupes = df[df.duplicated(subset=["project_id", "outcome_id"],
                                          keep="first")]
         # Keep only the first occurrence
-        df = df.drop_duplicates(subset=["project_id", "wos_uid"])
+        df = df.drop_duplicates(subset=["project_id", "outcome_id"])
         removed = before - len(df)
         if removed:
             print(f"  Removed {removed} duplicate outcomes")
@@ -178,7 +194,7 @@ def main():
     # cleaned separately, so the two outputs can never disagree. A paper
     # acknowledging several grants appears once, without its attribution
     # columns.
-    unique_df = (df.drop_duplicates(subset=["wos_uid"])
+    unique_df = (df.drop_duplicates(subset=["outcome_id"])
                    .drop(columns=["project_id", "grant_reference"],
                          errors="ignore"))
     unique_output_file = OUTPUT_DIR / "wos_outcomes_unique_clean.csv"
@@ -193,18 +209,24 @@ def main():
     inst_file = INPUT_DIR / "wos_outcomes_institutions_latest.csv"
     if inst_file.exists():
         inst_df = pd.read_csv(inst_file, encoding="utf-8")
+        # Clean WoS UID again
+        if "wos_uid" in inst_df.columns: 
+            inst_df = inst_df.rename(columns={"wos_uid": "outcome_id"}) 
+        if "outcome_id" in inst_df.columns:
+            inst_df["outcome_id"] = (inst_df["outcome_id"] 
+                                     .apply(clean_wos_outcome_id))
         # Remove the same duplicates as the outcome table
         if len(duplicate_rows):
-            duplicate_keys = duplicate_rows[["project_id", "wos_uid"]]
+            duplicate_keys = duplicate_rows[["project_id", "outcome_id"]]
             inst_df = inst_df.merge(duplicate_keys,
-                                    on=["project_id", "wos_uid"],
+                                    on=["project_id", "outcome_id"],
                                     how="left", indicator=True)
             inst_df = inst_df[inst_df["_merge"] == "left_only"].drop(
                 columns="_merge")
         inst_df = inst_df.replace(TEXT_TO_REPLACE, regex=True)
         inst_df = convert_to_category(inst_df, "city", "country")
         inst_df = convert_to_string(inst_df, "project_id", "grant_reference",
-                                    "wos_uid", "institution",
+                                    "outcome_id", "institution",
                                     "institution_raw", "full_address")
         inst_output_file = OUTPUT_DIR / "wos_institutions_clean.csv"
         inst_df.to_csv(inst_output_file, index=False, encoding="utf-8")
