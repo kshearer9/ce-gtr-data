@@ -328,10 +328,10 @@ def get_sdgs(rec):
 
 
 def get_keywords(rec):
-    """Return (author_keywords, keywords_plus) as pipe-joined strings."""
+    """Return (author_keywords, keywords) as pipe-joined strings."""
     author_kw = as_list(dig(rec, "static_data", "fullrecord_metadata",
                             "keywords", "keyword", default=[]))
-    plus_kw = as_list(dig(rec, "static_data", "item", "keywords_plus",
+    plus_kw = as_list(dig(rec, "static_data", "item", "keywords",
                           "keyword", default=[]))
     # Entries may be plain strings or {'content': ...} dicts.
     def flatten(items):
@@ -393,7 +393,7 @@ def get_funding(rec):
     return ";".join(agencies), ";".join(ids), fund_text
 
 
-def get_authors(rec):
+def get_author(rec):
     """Return (author_names, researcher_ids, orcids) as pipe-joined strings."""
     names = as_list(dig(rec, "static_data", "summary", "names", "name", default=[]))
     display, rids, orcids = [], [], []
@@ -460,7 +460,7 @@ def flatten_record(rec, project_id, grant_reference):
     macro, meso, micro = get_citation_topics(rec)
     author_kw, plus_kw = get_keywords(rec)
     agencies, grant_ids, fund_text = get_funding(rec)
-    authors, rids, orcids = get_authors(rec)
+    author, rids, orcids = get_author(rec)
 
     doctypes = as_list(dig(rec, "static_data", "summary", "doctypes",
                            "doctype", default=[]))
@@ -485,7 +485,7 @@ def flatten_record(rec, project_id, grant_reference):
         "sort_date": dig(rec, "static_data", "summary", "pub_info", "sortdate"),
         "early_access_year": dig(rec, "static_data", "summary", "pub_info",
                                  "early_access_year"),
-        "doctype": doctype_str,
+        "type": doctype_str,
         "publisher": dig(rec, "static_data", "summary", "publishers", "publisher",
                          "names", "name", "display_name"),
         "open_access_gold": dig(rec, "static_data", "summary", "pub_info",
@@ -498,7 +498,7 @@ def flatten_record(rec, project_id, grant_reference):
         "reference_count": dig(rec, "static_data", "fullrecord_metadata", "refs",
                                "count"),
         # People
-        "authors": authors,
+        "author": author,
         "researcher_ids": rids,
         "orcids": orcids,
         "n_addresses": dig(rec, "static_data", "fullrecord_metadata", "addresses",
@@ -510,7 +510,7 @@ def flatten_record(rec, project_id, grant_reference):
         # Text
         "abstract": get_abstract(rec),
         "author_keywords": author_kw,
-        "keywords_plus": plus_kw,
+        "keywords": plus_kw,
         # Supplementary taxonomies, QUARANTINED from the discipline crosswalk
         "wos_categories_traditional": traditional,
         "wos_categories_extended": extended,
