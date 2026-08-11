@@ -17,6 +17,7 @@ Exported outputs:
 
 from pathlib import Path
 import pandas as pd
+import re
 from utils.cleaning import (normalise_name, convert_to_string,
                             clean_text_columns,
                             convert_to_category, convert_to_numeric)
@@ -48,20 +49,19 @@ STRING_COLUMNS = [
     "eissn",
     "source_title",
     "publisher",
-    "authors",
+    "author",
     "researcher_ids",
     "orcids",
     "funding_agencies",
     "funding_grant_ids",
     "author_keywords",
-    "keywords_plus",
+    "keywords",
     "wos_categories_traditional",
     "wos_categories_extended",
     "citation_topic_macro",
     "citation_topic_meso",
     "citation_topic_micro",
     "sdg_categories",
-    "pub_month",
 ]
 
 TEXT_COLUMNS = [
@@ -71,7 +71,6 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "pub_year",
     "early_access_year",
     "times_cited_core",
     "times_cited_all_db",
@@ -87,7 +86,7 @@ DATE_COLUMNS = [
 ]
 
 CATEGORY_COLUMNS = [
-    "doctype",
+    "type",
     "open_access_gold",
 ]
 
@@ -101,14 +100,14 @@ COLS_TO_DROP = []
 # CLEANING FUNCTIONS
 # ---------------------------------------------------------------------------
 
-def clean_authors(authors):
+def clean_author(author):
     """
     Normalise semicolon-separated author names.
     """
-    if pd.isna(authors):
+    if pd.isna(author):
         return pd.NA
     cleaned = []
-    for name in str(authors).split(";"):
+    for name in str(author).split(";"):
         name = name.strip()
         if not name:
             continue
@@ -126,6 +125,26 @@ def clean_wos_outcome_id(value):
     if value.upper().startswith("WOS:"): 
         value = value[4:] 
     return value
+
+def clean_issn(value):
+    """
+    Removes hyphens within individual ISSNs and separates multiple
+    ISSNs with '; '.
+    """
+    if pd.isna(value):
+        return pd.NA
+    value = str(value).strip()
+    if not value:
+        return pd.NA
+    # Find ISSNs in either 12345678 or 1234-5678 format.
+    issns = re.findall(r"\b\d{4}-?\d{3}[\dXx]\b", value)
+    if not issns:
+        return value
+    cleaned = [issn.replace("-", "").upper()
+               for issn in issns]
+    # Remove duplicates while preserving order.
+    cleaned = list(dict.fromkeys(cleaned))
+    return "; ".join(cleaned)
 
 
 def clean_df(df):
@@ -177,9 +196,17 @@ def main():
     for col in DATE_COLUMNS:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
+    # Use sort-date as a fallback where cover-date is missing
+    if "cover_date" in df.columns and "sort_date" in df.columns:
+        df["cover_date"] = df["cover_date"].fillna(df["sort_date"])
+    df = df.drop(columns=["sort_date", "pub_year", "pub_month"], errors="ignore")
     df = convert_to_category(df, *CATEGORY_COLUMNS)
+    if "issn" in df.columns:
+        df["issn"] = df["issn"].apply(clean_issn)
+    if "eissn" in df.columns:
+        df["eissn"] = df["eissn"].apply(clean_issn)
     df = convert_to_string(df, *STRING_COLUMNS)
-    df["authors_clean"] = df["authors"].apply(clean_authors)
+    df["author_clean"] = df["author"].apply(clean_author)
     output_file = OUTPUT_DIR / "wos_all_outcomes_clean.csv"
     df.to_csv(output_file, index=False, encoding="utf-8")
 
