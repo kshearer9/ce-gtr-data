@@ -51,13 +51,14 @@ STRING_COLUMNS = [
     "start_page",
     "end_page",
     "page_range",
-    "scopus_url",
+    "url",
     "institutions",
     "issn",
     "author",
     "subject_areas",
     "keywords",
-    "journal"
+    "journal",
+    "year"
 ]
 
 TEXT_COLUMNS = [
@@ -66,7 +67,7 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "citation_count",
+    "cited_by",
     "source_id",
     "pubmed_id",
     "reference_count"
@@ -77,8 +78,7 @@ DATE_COLUMNS = [
 ]
 
 CATEGORY_COLUMNS = [
-    "publication_type",
-    "aggregation_type"
+    "type",
 ]
 
 COLS_TO_DROP = [
@@ -140,11 +140,11 @@ def clean_issn(value):
     return "; ".join(cleaned)
 
 def clean_df(df):
-    removed_dupes = pd.DataFrame
     # Remove SCOPUS_ID: prefix
     if "outcome_id" in df.columns: 
         df["outcome_id"] = df["outcome_id"].apply(clean_scopus_outcome_id)
     # Remove duplicate project-outcome matches
+    removed_dupes = pd.DataFrame()
     if {"project_id", "outcome_id"}.issubset(df.columns):
         before = len(df)
         # Keep the duplicates that will be removed
@@ -179,6 +179,10 @@ def main():
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)
+    # Createyear column
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].apply(
+            lambda x: str(x.year) if pd.notna(x) else pd.NA)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
     df["author_clean"] = df["author"].apply(clean_author)

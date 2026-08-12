@@ -92,15 +92,8 @@ def convert_to_date(df, *cols):
     """
     for col in cols:
         if col in df.columns:
-            df[col] = (
-                pd.to_datetime(
-                    df[col],
-                    unit="ms",
-                    errors="coerce",
-                    utc=True
-                )
-                .dt.date
-            )
+            df[col] = (pd.to_datetime(df[col], unit="ms", errors="coerce",
+                                      utc=True).dt.date)
     return df
 
 

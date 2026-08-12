@@ -143,12 +143,11 @@ KEEP_COLUMNS = {
     "abstracts-retrieval-response.coredata.prism:startingPage": "start_page",
     "abstracts-retrieval-response.coredata.prism:endingPage": "end_page",
     "abstracts-retrieval-response.coredata.prism:pageRange": "page_range",
-    "abstracts-retrieval-response.coredata.subtypeDescription": "publication_type",
-    "abstracts-retrieval-response.coredata.prism:aggregationType": "aggregation_type",
-    "abstracts-retrieval-response.coredata.citedby-count": "citation_count",
+    "abstracts-retrieval-response.coredata.subtypeDescription": "type",
+    "abstracts-retrieval-response.coredata.citedby-count": "cited_by",
     "abstracts-retrieval-response.coredata.openaccess": "open_access",
     "abstracts-retrieval-response.coredata.openaccessFlag": "open_access_flag",
-    "abstracts-retrieval-response.coredata.prism:url": "scopus_url",
+    "abstracts-retrieval-response.coredata.prism:url": "url",
 
     # Authors and institutions
     "abstracts-retrieval-response.authors.author": "author",

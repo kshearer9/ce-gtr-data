@@ -62,12 +62,13 @@ STRING_COLUMNS = [
     "citation_topic_meso",
     "citation_topic_micro",
     "sdg_categories",
+    "year"
 ]
 
 TEXT_COLUMNS = [
     "title",
     "abstract",
-    "funding_text",
+    "funding_text"
 ]
 
 NUMERIC_COLUMNS = [
@@ -77,17 +78,17 @@ NUMERIC_COLUMNS = [
     "usage_180days",
     "usage_alltime",
     "reference_count",
-    "n_addresses",
+    "n_addresses"
 ]
 
 DATE_COLUMNS = [
     "cover_date",
-    "sort_date",
+    "sort_date"
 ]
 
 CATEGORY_COLUMNS = [
     "type",
-    "open_access_gold",
+    "open_access_gold"
 ]
 
 # Nothing is dropped: every collected field is either analytical (citations,
@@ -125,6 +126,21 @@ def clean_wos_outcome_id(value):
     if value.upper().startswith("WOS:"): 
         value = value[4:] 
     return value
+
+def make_doi_url(doi):
+    """
+    Create a DOI URL from a DOI value.
+    """
+    if pd.isna(doi):
+        return pd.NA
+    doi = str(doi).strip()
+    if not doi:
+        return pd.NA
+    # Remove an existing DOI URL if present.
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.IGNORECASE)
+    # Remove a leading "doi:" if present.
+    doi = re.sub(r"^doi:\s*", "", doi, flags=re.IGNORECASE)
+    return f"https://doi.org/{doi}"
 
 def clean_issn(value):
     """
@@ -195,10 +211,17 @@ def main():
     # them all to NaT. Parse them directly instead.
     for col in DATE_COLUMNS:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
+            df[col] = (pd.to_datetime(df[col], format="mixed", 
+                                     errors="coerce").dt.date)
     # Use sort-date as a fallback where cover-date is missing
     if "cover_date" in df.columns and "sort_date" in df.columns:
         df["cover_date"] = df["cover_date"].fillna(df["sort_date"])
+    # Rename the final publication date field
+    df = df.rename(columns={"cover_date": "publication_date"})
+    # Create a general publication year field from publication_date
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].dt.year
+    # Remove the other date fields no longer needed
     df = df.drop(columns=["sort_date", "pub_year", "pub_month"], errors="ignore")
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     if "issn" in df.columns:
@@ -206,6 +229,9 @@ def main():
     if "eissn" in df.columns:
         df["eissn"] = df["eissn"].apply(clean_issn)
     df = convert_to_string(df, *STRING_COLUMNS)
+    # Create a DOI URL from the cleaned DOI.
+    if "doi" in df.columns:
+        df["url"] = df["doi"].apply(make_doi_url)
     df["author_clean"] = df["author"].apply(clean_author)
     output_file = OUTPUT_DIR / "wos_all_outcomes_clean.csv"
     df.to_csv(output_file, index=False, encoding="utf-8")

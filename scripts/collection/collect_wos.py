@@ -302,7 +302,7 @@ def get_subject_categories(rec):
             traditional.append(content)
         else:
             extended.append(content)
-    return ";".join(traditional), ";".join(extended)
+    return "; ".join(traditional), "; ".join(extended)
 
 
 def get_citation_topics(rec):
@@ -324,7 +324,7 @@ def get_sdgs(rec):
     """Return pipe-joined UN Sustainable Development Goal categories."""
     cats = as_list(dig(rec, "dynamic_data", "citation_related", "SDG",
                        "sdg_category", default=[]))
-    return ";".join(c.get("content", "") for c in cats if isinstance(c, dict))
+    return "; ".join(c.get("content", "") for c in cats if isinstance(c, dict))
 
 
 def get_keywords(rec):
@@ -341,7 +341,7 @@ def get_keywords(rec):
                 out.append(k)
             elif isinstance(k, dict) and k.get("content"):
                 out.append(str(k["content"]))
-        return ";".join(out)
+        return "; ".join(out)
     return flatten(author_kw), flatten(plus_kw)
 
 
@@ -390,7 +390,7 @@ def get_funding(rec):
         p if isinstance(p, str) else str(p.get("content", ""))
         for p in fund_text_parts if p
     )
-    return ";".join(agencies), ";".join(ids), fund_text
+    return "; ".join(agencies), "; ".join(ids), fund_text
 
 
 def get_author(rec):
@@ -410,7 +410,7 @@ def get_author(rec):
             rids.append(str(n["r_id"]))
         if n.get("orcid_id"):
             orcids.append(str(n["orcid_id"]))
-    return ";".join(display), ";".join(rids), ";".join(orcids)
+    return "; ".join(display), "; ".join(rids), "; ".join(orcids)
 
 
 def get_institutions(rec):
@@ -464,7 +464,7 @@ def flatten_record(rec, project_id, grant_reference):
 
     doctypes = as_list(dig(rec, "static_data", "summary", "doctypes",
                            "doctype", default=[]))
-    doctype_str = ";".join(d if isinstance(d, str) else str(d.get("content", ""))
+    doctype_str = "; ".join(d if isinstance(d, str) else str(d.get("content", ""))
                            for d in doctypes if d)
 
     return {

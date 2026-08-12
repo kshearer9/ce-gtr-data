@@ -42,7 +42,7 @@ COLS_TO_DROP = ["href", "ext", "outcomeid", "created", "updated", "links.link"]
 RENAME_MAP = {"supportingUrl": "url", "id": "outcome_id"}
 
 STRING_COLS = ["project_id", "grant_reference", "project_title", "outcome_id",
-               "supporting_url", "title", "description", "impact", "url"]
+               "supporting_url", "title", "description", "impact", "url", "year"]
 
 TEXT_COLUMNS = ["title", "description", "impact"]
 
