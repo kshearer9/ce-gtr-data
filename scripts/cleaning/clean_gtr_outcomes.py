@@ -100,11 +100,21 @@ def clean_doi_and_url(df):
 
 def merge_date(df):
     """
-    Merge all year/date fields into a single 'year' column.
-    1. Explicit year fields
-    3. Start/end dates (expanded into comma-separated years)
+    Merge all year/date fields into a single 'year' column while preserving
+    publication date as 'date_published'.
+    'year' is a generalised year field populated from:
+    - datePublished
+    - yearFirstProvided
+    - yearsOfDissemination
+    - yearEstablished
+    - yearDevelopmentCompleted
+    - yearProtectionGranted
+    - start/end dates
     """
-    df["year"] = np.nan
+    df["year"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    # Preserve publication date separately
+    if "datePublished" in df.columns:
+        df["date_published"] = df["datePublished"]
     year_columns = [
         "datePublished",
         "yearFirstProvided",
@@ -121,17 +131,16 @@ def merge_date(df):
                                                .replace(r"\s*,\s*", "; ", regex=True))
             else:
                 df["year"] = df["year"].fillna(df[col].astype("string"))
-    # If start and end dates provided, convert to same form as years of dissemination
+    # If start and end dates are provided, convert them to years
     if "start" in df.columns:
         start_year = df["start"].dt.year
         if "end" in df.columns:
             end_year = df["end"].dt.year
             missing_year = df["year"].isna()
             df.loc[missing_year, "year"] = df.loc[missing_year].apply(
-                lambda row: ("; ".join(str(year)
-                        for year in range(
-                            int(start_year[row.name]),
-                            int(end_year[row.name]) + 1))
+                lambda row: ("; ".join(str(year) for year in range(
+                    int(start_year[row.name]),
+                    int(end_year[row.name]) + 1))
                     if pd.notna(end_year[row.name])
                     and pd.notna(start_year[row.name])
                     and end_year[row.name] >= start_year[row.name]
@@ -140,7 +149,7 @@ def merge_date(df):
                     else pd.NA), axis=1)
         else:
             df["year"] = df["year"].fillna(start_year.astype("string"))
-    # Remove original date/year columns
+    # Remove the source year/date fields
     df = df.drop(columns=year_columns + ["start", "end"], errors="ignore")
     return df
             
