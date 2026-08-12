@@ -28,7 +28,8 @@ STRING_COLUMNS = [
     "topics",
     "doi",
     "url",
-    "openalex_url"
+    "openalex_url",
+    "year"
 ]
 
 TEXT_COLUMNS = [
@@ -100,8 +101,13 @@ def main():
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)
+    # Createyear column
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].apply(
+            lambda x: str(x.year) if pd.notna(x) else pd.NA)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
+    # Extract outcome id from urls
     df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id)
     df["authors_clean"] = df["authors"].apply(clean_authors)
 
