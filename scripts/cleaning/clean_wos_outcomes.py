@@ -213,7 +213,7 @@ def main():
     for col in DATE_COLUMNS:
         if col in df.columns:
             df[col] = (pd.to_datetime(df[col], format="mixed", 
-                                     errors="coerce").dt.date)
+                                     errors="coerce"))
     # Use sort-date as a fallback where cover-date is missing
     if "cover_date" in df.columns and "sort_date" in df.columns:
         df["cover_date"] = df["cover_date"].fillna(df["sort_date"])
