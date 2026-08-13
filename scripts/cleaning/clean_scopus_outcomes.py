@@ -51,7 +51,6 @@ STRING_COLUMNS = [
     "start_page",
     "end_page",
     "page_range",
-    "url",
     "institutions",
     "issn",
     "author",
@@ -85,7 +84,8 @@ COLS_TO_DROP = [
     "open_access",
     "open_access_flag",
     "publisher",
-    "page_range"
+    "page_range",
+    "url"
 ]
 
 
