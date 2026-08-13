@@ -446,6 +446,18 @@ def get_institutions(rec):
         })
     return rows
 
+def clean_institution_name(name):
+    """Clean a WoS institution name by removing location suffixes."""
+    if not name:
+        return None
+    name = str(name).strip()
+    # Remove trailing UK / United Kingdom suffixes
+    name = re.sub(r"\s*-\s*UK$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*-\s*United Kingdom$", "", name, flags=re.IGNORECASE)
+    # Normalise whitespace
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
 
 # ---------------------------------------------------------------------------
 # RECORD FLATTENING
@@ -501,6 +513,9 @@ def flatten_record(rec, project_id, grant_reference):
         "orcids": orcids,
         "n_addresses": dig(rec, "static_data", "fullrecord_metadata", "addresses",
                            "count"),
+        "institutions": "; ".join(clean_institution_name(inst["institution"])
+                                  for inst in get_institutions(rec)
+                                  if inst.get("institution")),
         # Funding (evidence for the match, and multi-grant detection)
         "funding_agencies": agencies,
         "funding_grant_ids": grant_ids,
@@ -510,8 +525,8 @@ def flatten_record(rec, project_id, grant_reference):
         "author_keywords": author_kw,
         "keywords": plus_kw,
         # Supplementary taxonomies, QUARANTINED from the discipline crosswalk
-        "wos_categories_traditional": traditional,
-        "wos_categories_extended": extended,
+        "categories_traditional": traditional,
+        "categories_extended": extended,
         "citation_topic_macro": macro,
         "citation_topic_meso": meso,
         "citation_topic_micro": micro,
