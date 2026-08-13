@@ -1,7 +1,6 @@
 from pathlib import Path
 import pandas as pd
 import argparse
-import numpy as np
 from utils.merge.type_mappings import GTR_TYPE_MAP, OPENALEX_TYPE_MAP
 from utils.merge.col_mappings import OPENALEX_COL_MAP
 
@@ -21,7 +20,7 @@ for d in (PROJECT_INPUT_DIR, OUTCOME_INPUT_DIR, OUTPUT_DIR):
 
 
 # ---------------------------------------------------------------------------
-# MERGE
+# PROJECT MERGE
 # ---------------------------------------------------------------------------
 
 def merge_projects(gtr_df, openalex_df):
@@ -52,15 +51,10 @@ def merge_projects(gtr_df, openalex_df):
     if "funding_type" in merged_df.columns and "grant_category" in merged_df.columns:
         merged_df["grant_category"] = (
             merged_df["grant_category"]
-            .fillna(merged_df["funding_type"])
-        )
+            .fillna(merged_df["funding_type"]))
 
         # Remove temporary OpenAlex funding type column
-        merged_df.drop(
-            columns=["funding_type"],
-            inplace=True,
-            errors="ignore"
-        )
+        merged_df.drop(columns=["funding_type"], inplace=True, errors="ignore")
 
     # Replace abstract_text_clean with OpenAlex description if OpenAlex is longer
     if "openalex_description" in merged_df.columns:
@@ -71,12 +65,10 @@ def merge_projects(gtr_df, openalex_df):
                 and len(str(row["openalex_description"])) 
                 > len(str(row.get("abstract_text_clean", "")))
                 else row.get("abstract_text_clean"),
-            axis=1
-        )
+            axis=1)
 
         # Remove temporary OpenAlex description
-        merged_df.drop(columns=["openalex_description"],
-                       inplace=True, errors="ignore")
+        merged_df.drop(columns=["openalex_description"], inplace=True, errors="ignore")
         # Remove old unclean abstract field
         merged_df.drop(columns=["abstract_text"], inplace=True, errors="ignore")
     # Remove original columns if cleaned version exists
@@ -88,250 +80,9 @@ def merge_projects(gtr_df, openalex_df):
     merged_df.drop(columns=originals_to_remove, inplace=True, errors="ignore")
     return merged_df
 
-def normalise_outcome_type(df, source):
-    """
-    Map source-specific outcome types to canonical type and subtype.
-    """
-    if source == "gtr":
-        type_map = GTR_TYPE_MAP
-    elif source == "openalex":
-        type_map = OPENALEX_TYPE_MAP
-    else:
-        raise ValueError("source must be 'gtr' or 'openalex'")
-    mapped = df["type"].map(type_map)
-    df["type_normalised"] = (
-        mapped
-        .apply(lambda x: x["type"] if isinstance(x, dict) else None)
-        .fillna("other"))
-    df["subtype_normalised"] = (
-        mapped
-        .apply(lambda x: x["subtype"] if isinstance(x, dict) else None)
-        .fillna("other"))
-    return df
-
-def append_external_records(
-    gtr_df,
-    external_df,
-    column_mapping,
-    source_name=None
-):
-    """
-    Append records from an external dataset into GtR format.
-
-    Parameters:
-    gtr_df: existing GtR dataframe
-    external_df: dataframe to append
-    column_mapping: dictionary mapping external columns to GtR columns
-    source_name: optional name of source dataset
-
-    Returns:
-    Combined dataframe
-    """
-
-    external = external_df.copy()
-
-    # Rename external columns to GtR names
-    external = external.rename(columns=column_mapping)
-
-    # Keep only columns that exist in GtR
-    common_cols = [
-        col for col in external.columns
-        if col in gtr_df.columns
-    ]
-
-    external = external[common_cols]
-
-    # Add missing GtR columns to external dataframe
-    for col in gtr_df.columns:
-        if col not in external.columns:
-            external[col] = pd.NA
-
-    # Ensure same column order
-    external = external[gtr_df.columns]
-
-    # Optional tracking
-    if source_name:
-        external["source"] = source_name
-        if "source" not in gtr_df.columns:
-            gtr_df["source"] = "gtr"
-
-    combined = pd.concat(
-        [gtr_df, external],
-        ignore_index=True
-    )
-
-    return combined
-
-def merge_openalex_outcomes(gtr_outcomes, openalex_outcomes):
-
-    oa_cols = [
-        "title_clean",
-        "doi",
-        "type",
-        "cited_by",
-        "fwci",
-        "topics",
-        "domain",
-        "field",
-        "subfield"
-    ]
-
-    openalex = openalex_outcomes[
-        [c for c in oa_cols if c in openalex_outcomes.columns]
-    ].copy()
-
-    gtr = gtr_outcomes.copy()
-
-    # Normalise types
-    gtr = normalise_outcome_type(gtr, "gtr")
-    openalex = normalise_outcome_type(openalex, "openalex")
-
-    print("\nOpenAlex outcome matching")
-    print("-------------------------")
-    print(f"OpenAlex records: {len(openalex)}")
-    print(f"GtR records: {len(gtr)}")
-
-    # Remove duplicate OpenAlex records with identical matching keys
-    openalex_duplicates = (
-        openalex.groupby(
-            ["title_clean", "doi", "type_normalised"]
-        )
-        .size()
-        .reset_index(name="count")
-    )
-
-    openalex_duplicates = openalex_duplicates[
-        openalex_duplicates["count"] > 1
-    ]
-
-    print(
-        "Duplicate OpenAlex title/DOI/type combinations removed:",
-        len(openalex_duplicates)
-    )
-
-    openalex = openalex.drop_duplicates(
-        subset=[
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ],
-        keep="first"
-    )
-
-    # Match only on title + doi + type
-    matched = openalex.merge(
-        gtr,
-        on=[
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ],
-        how="inner",
-        suffixes=("_openalex", "_gtr")
-    )
-
-    unmatched = openalex.merge(
-        gtr[
-            [
-                "title_clean",
-                "doi",
-                "type_normalised"
-            ]
-        ],
-        on=[
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ],
-        how="left",
-        indicator=True
-    )
-
-    unmatched = unmatched[
-        unmatched["_merge"] == "left_only"
-    ].drop(columns="_merge")
-
-    print(f"Matched records: {len(matched)}")
-    print(f"Unmatched OpenAlex records: {len(unmatched)}")
-
-    # Add enrichment to ALL matching GtR records
-    enrichment_cols = [
-        "title_clean",
-        "doi",
-        "type_normalised",
-        "cited_by",
-        "fwci",
-        "topics",
-        "domain",
-        "field",
-        "subfield"
-    ]
-
-    gtr = gtr.merge(
-        matched[enrichment_cols].drop_duplicates(
-            subset=[
-                "title_clean",
-                "doi",
-                "type_normalised"
-            ]
-        ),
-        on=[
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ],
-        how="left"
-    )
-
-    print(
-        "OpenAlex enrichment added:",
-        gtr["topics"].notna().sum()
-    )
-
-    # Get full OpenAlex records that did not match
-    unmatched_keys = unmatched[
-        [
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ]
-    ]
-
-    # Create full OpenAlex dataframe with normalised type for matching
-    openalex_full = openalex_outcomes.copy()
-    openalex_full = normalise_outcome_type(openalex_full, "openalex")
-
-    openalex_unmatched_full = openalex_full.merge(
-        unmatched_keys,
-        on=[
-            "title_clean",
-            "doi",
-            "type_normalised"
-        ],
-        how="inner"
-    )
-
-    print(
-        "Full OpenAlex records appended:",
-        len(openalex_unmatched_full)
-    )
-
-    outcomes = append_external_records(
-        gtr,
-        openalex_unmatched_full,
-        OPENALEX_COL_MAP,
-        source_name="openalex"
-    )
-
-    return outcomes
-
-        
-
-
-
 
 # ---------------------------------------------------------------------------
-# COMPARE METADATA
+# COMPARE PROJECT METADATA
 # ---------------------------------------------------------------------------
 
 def compare_openalex_gtr(gtr_df, openalex_df):
@@ -386,16 +137,167 @@ def compare_openalex_gtr(gtr_df, openalex_df):
         # Compare dates
         for gtr_col, oa_col, label in [
             ("start_date_gtr", "start_date_openalex", "start_date"),
-            ("end_date_gtr", "end_date_openalex", "end_date")]:
-            gtr_date = pd.to_datetime(row.get(gtr_col), errors="coerce")
-            oa_date = pd.to_datetime(row.get(oa_col), errors="coerce")
-            record[f"{label}_difference"] = (pd.notna(gtr_date)
-                and pd.notna(oa_date) and gtr_date != oa_date)
+            ("end_date_gtr", "end_date_openalex", "end_date")
+        ]:
+            gtr_date = pd.to_datetime(
+                row.get(gtr_col),
+                errors="coerce"
+            )
+
+            oa_date = pd.to_datetime(
+                row.get(oa_col),
+                errors="coerce"
+            )
+
+            if pd.notna(gtr_date) and pd.notna(oa_date):
+                date_difference_days = (
+                    oa_date - gtr_date
+                ).days
+            else:
+                date_difference_days = None
+
+            record[f"{label}_difference"] = (
+                date_difference_days != 0
+                if date_difference_days is not None
+                else False
+            )
+
+            record[f"{label}_difference_days"] = (
+                date_difference_days
+            )
+
             record[f"gtr_{label}"] = gtr_date
             record[f"openalex_{label}"] = oa_date
 
         comparisons.append(record)
     return pd.DataFrame(comparisons)
+
+
+
+# ---------------------------------------------------------------------------
+# OUTCOME MERGE
+# ---------------------------------------------------------------------------
+
+def merge_outcomes_using_map(gtr_outcomes, openalex_outcomes, scopus_outcomes,
+                            wos_outcomes, outcome_map,):
+    """
+    Build the global outcome dataset using the existing outcome map.
+
+    Each source outcome_id is matched to its corresponding source-specific
+    ID in project_outcome_map.csv. The global_outcome_id from the map is
+    retained as the unique identifier for each outcome.
+    """
+    outcomes = outcome_map.copy()
+    outcomes.drop(columns=["source", "match_basis", "project_id"], 
+                  inplace=True, errors="ignore")
+    source_data = [
+        ("gtr", gtr_outcomes),
+        ("openalex", openalex_outcomes),
+        ("scopus", scopus_outcomes),
+        ("wos", wos_outcomes),
+    ]
+
+    source_id_columns = []
+    sources = []
+    for source, source_df in source_data:
+        source_id_column = f"{source}_outcome_id"
+        # Skip sources without a corresponding ID in the map or dataset
+        if source_id_column not in outcomes.columns:
+            continue
+        if "outcome_id" not in source_df.columns:
+            continue
+        source_df = source_df.copy()
+        # Standardise outcome IDs before merging
+        outcomes[source_id_column] = (
+            outcomes[source_id_column].astype("string").str.strip())
+        source_df["outcome_id"] = (
+            source_df["outcome_id"].astype("string").str.strip())
+        # Keep only unique outcomes
+        source_df = source_df.drop_duplicates(subset=["outcome_id"], keep="first")
+        source_df = source_df.rename(columns={col: f"{source}_{col}"
+                                              for col in source_df.columns
+                                              if col != "outcome_id"})
+        # Rename the source ID to match the map
+        source_df = source_df.rename(columns={"outcome_id": source_id_column})
+        source_columns = [source_id_column]
+        for column in source_df.columns:
+            if column != source_id_column:
+                source_columns.append(column)
+        source_df = source_df[source_columns]
+        # Add source metadata to the global outcome dataset
+        outcomes = outcomes.merge(
+            source_df,
+            on=source_id_column,
+            how="left")
+        source_id_columns.append(source_id_column)
+        sources.append(source)
+
+    # Remove unnecessary columns
+    outcomes = outcomes.drop(columns=source_id_columns, errors = "ignore")
+    cols_to_remove = [
+        "project_id",
+        "project_title",
+        "project_acronym",
+        "project_start_date",
+        "project_end_date",
+        "grant_category",
+        "funding_type",
+        "grant_reference",
+        "project_openalex_url",
+        "source_id",
+        "publisher",
+        "n_addresses",
+        "funding_agencies",
+        "funding_grant_ids"
+    ]
+    source_columns_to_remove = [f"{source}_{column}"
+                                for source in sources
+                                for column in cols_to_remove]
+    outcomes.drop(columns=source_columns_to_remove, inplace=True, 
+                  errors="ignore")
+    # Replace original columns with their cleaned versions.
+    clean_columns = [col for col in outcomes.columns
+                     if col.endswith("_clean")
+                     and col[:-6] in outcomes.columns]
+    for clean_col in clean_columns:
+        original_col = clean_col[:-6]
+        outcomes[original_col] = outcomes[clean_col]
+    outcomes.drop(columns=clean_columns, inplace=True, errors="ignore")
+
+
+
+    # Remove source prefixes where no other source has the same field
+    for column in list(outcomes.columns):
+        for source in sources:
+            prefix = f"{source}_"
+            if column.startswith(prefix):
+                base_column = column[len(prefix):]
+                matching_columns = [
+                    f"{other_source}_{base_column}"
+                    for other_source in sources
+                    if other_source != source
+                    and f"{other_source}_{base_column}" in outcomes.columns]
+                if not matching_columns:
+                    outcomes = outcomes.rename(columns={column: base_column})
+                break
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
+# OUTCOME COLUMN MERGING
+# ---------------------------------------------------------------------------
+
+def merge_preferred_column(df, output_column, source_columns,):
+    """
+    Use the first available non-missing value in source priority order.
+    """
+    df[output_column] = pd.NA
+    for column in source_columns:
+        if column not in df.columns:
+            continue
+        df[output_column] = (df[output_column].fillna(df[column]))
+    return df
+
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +321,8 @@ def main():
         raise FileNotFoundError(f"GtR dataset not found: {gtr_file}")
     if not openalex_file.exists():
         raise FileNotFoundError(f"OpenAlex dataset not found: {openalex_file}")
-    gtr_df = pd.read_csv(gtr_file)
-    openalex_df = pd.read_csv(openalex_file)
+    gtr_df = pd.read_csv(gtr_file, encoding = "utf-8")
+    openalex_df = pd.read_csv(openalex_file, encoding = "utf-8")
     
     # Compare differences in metadata
     comparison_df = compare_openalex_gtr(gtr_df, openalex_df)
@@ -437,14 +339,15 @@ def main():
     project_output_file = OUTPUT_DIR / "projects.csv"
     project_df.to_csv(project_output_file, index=False, encoding="utf-8")
     
-    print("\nMerged GtR and OpenAlex project datasets.")
-    print("=" * 40)
+    print()
+    print("=" * 70)
+    print("PROJECT MERGE SUMMARY")
+    print("=" * 70)
     print(f"Rows           : {len(project_df)}")
     print(f"Columns        : {len(project_df.columns)}")
     print(f"Saved          : {project_output_file.name}")
-    print("=" * 40)
-    print("\nOpenAlex-GtR Comparison Summary:")
-    print("=" * 40)
+    print("\nOpenAlex-GtR Project Comparison Summary:")
+    print("-" * 70)    
     summary_labels = {
         "openalex_description_longer": "OpenAlex Longer Description",
         "description_difference": "Description Difference",
@@ -456,44 +359,86 @@ def main():
     for col, label in summary_labels.items():
         if col in comparison_df.columns:
             print(f"{label:<30}: {comparison_df[col].sum()}")
-    print("=" * 40)
+    print("-" * 70)
+
+    print("\nStart date difference distribution:")
+    print("-" * 70)
+    print(
+        comparison_df["start_date_difference_days"]
+        .value_counts(dropna=False)
+        .sort_index()
+    )
+
+    print("\nEnd date difference distribution:")
+    print("-" * 70)
+    print(
+        comparison_df["end_date_difference_days"]
+        .value_counts(dropna=False)
+        .sort_index()
+    )
 
     # ------------------------------------------------
     # OUTCOMES
     # ------------------------------------------------
-    # Load project data
+
     gtr_outcome_file = OUTCOME_INPUT_DIR / "gtr_all_outcomes_clean.csv"
     openalex_outcome_file = OUTCOME_INPUT_DIR / "openalex_all_outcomes_clean.csv"
-    if not gtr_file.exists():
-        raise FileNotFoundError(f"GtR dataset not found: {gtr_outcome_file}")
-    if not openalex_file.exists():
-        raise FileNotFoundError(f"OpenAlex dataset not found: {openalex_outcome_file}")
-    gtr_outcome_df = pd.read_csv(gtr_outcome_file)
-    outcome_df = gtr_outcome_df
-    openalex_outcome_df = pd.read_csv(openalex_outcome_file)
-    outcome_df = (
-        merge_openalex_outcomes(
-            outcome_df,
-            openalex_outcome_df
-        )
-    )
-    print(outcome_df["type"].notna().sum())
-    print(outcome_df["type_normalised"].notna().sum())
-    same_title_doi = (
-        outcome_df
-        .groupby(["title_clean", "doi"])
-        .size()
-        .reset_index(name="count")
+    scopus_outcome_file = OUTCOME_INPUT_DIR / "scopus_all_outcomes_clean.csv"
+    wos_outcome_file = OUTCOME_INPUT_DIR / "wos_all_outcomes_clean.csv"
+
+    # Load
+    gtr_outcome_df = pd.read_csv(gtr_outcome_file, encoding="utf-8",
+                                 dtype={"outcome_id": "string"})
+    openalex_outcome_df = pd.read_csv(openalex_outcome_file, encoding="utf-8",
+                                      dtype={"outcome_id": "string"})
+    scopus_outcome_df = pd.read_csv(scopus_outcome_file, encoding="utf-8",
+                                    dtype={"outcome_id": "string"})
+    wos_outcome_df = pd.read_csv(wos_outcome_file, encoding="utf-8",
+                                 dtype={"outcome_id": "string"})
+    
+    # Merge outcomes
+    outcome_map_file = OUTPUT_DIR / "project_outcome_map.csv"
+    if not outcome_map_file.exists():
+        raise FileNotFoundError(
+            f"Project-outcome map not found: {outcome_map_file}")
+    outcome_map = pd.read_csv(outcome_map_file, encoding="utf-8",
+                               dtype={"gtr_outcome_id": "string",
+                                      "openalex_outcome_id": "string",
+                                      "scopus_outcome_id": "string",
+                                      "wos_outcome_id": "string"})
+    outcome_df = merge_outcomes_using_map(
+        gtr_outcomes=gtr_outcome_df,
+        openalex_outcomes=openalex_outcome_df,
+        scopus_outcomes=scopus_outcome_df,
+        wos_outcomes=wos_outcome_df,
+        outcome_map=outcome_map,
     )
 
-    duplicates = same_title_doi[same_title_doi["count"] > 1]
+    # ------------------------------------------------------------------
+    # PRINT REPORT
+    # ------------------------------------------------------------------
 
-    print(f"Duplicate title + DOI combinations: {len(duplicates)}")
-    print(f"Records involved: {duplicates['count'].sum()}")
     outcome_output_file = OUTPUT_DIR / "outcomes.csv"
-    outcome_df.to_csv(outcome_output_file, index=False, encoding="utf-8")
+    
+    """print_outcome_report(
+        outcome_df,
+        outcome_output_file
+    )"""
 
+    # ------------------------------------------------------------------
+    # SAVE
+    # ------------------------------------------------------------------
 
+    outcome_df.to_csv(
+        outcome_output_file,
+        index=False,
+        encoding="utf-8",
+    )
+
+    print(
+        f"\nSaved outcomes to: "
+        f"{outcome_output_file}"
+    )
 
 
 if __name__ == "__main__":
