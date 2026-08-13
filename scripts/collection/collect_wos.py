@@ -493,8 +493,6 @@ def flatten_record(rec, project_id, grant_reference):
         # Impact measures (the point of the WoS pull for inputs-vs-outputs work)
         "times_cited_core": core_tc,
         "times_cited_all_db": all_tc,
-        "usage_180days": dig(rec, "dynamic_data", "wos_usage", "last180days"),
-        "usage_alltime": dig(rec, "dynamic_data", "wos_usage", "alltime"),
         "reference_count": dig(rec, "static_data", "fullrecord_metadata", "refs",
                                "count"),
         # People

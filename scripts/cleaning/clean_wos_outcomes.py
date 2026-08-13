@@ -91,10 +91,11 @@ CATEGORY_COLUMNS = [
     "open_access_gold"
 ]
 
-# Nothing is dropped: every collected field is either analytical (citations,
-# usage), match evidence (funding text and grant ids) or a quarantined
-# taxonomy kept for the publication-side label comparison.
-COLS_TO_DROP = []
+# Dropping project-related fields
+COLS_TO_DROP = ["funding_agencies",
+                "funding_grant_ids",
+                "funding_text",
+                "n_addresses"]
 
 
 # ---------------------------------------------------------------------------
