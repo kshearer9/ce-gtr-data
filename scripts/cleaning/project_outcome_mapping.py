@@ -1,3 +1,11 @@
+"""
+Merge outcome records from GtR, OpenAlex, Scopus and Web of Science.
+
+Matches records using project ID + title or description, combines matched
+source IDs, and assigns a global_outcome_id to each unique outcome.
+Outcomes linked to multiple projects are retained as separate project rows.
+"""
+
 from pathlib import Path
 import pandas as pd
 import re
