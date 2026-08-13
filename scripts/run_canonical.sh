@@ -99,10 +99,10 @@ echo
 echo "--- step 4: re-collect and clean the three outcome sources ---"
 for step in "OpenAlex:scripts.collection.collect_openalex" \
             "Scopus:scripts.collection.collect_scopus_outcomes" \
-            "WoS:scripts.collection.collect_wos"; do
+            "WoS:scripts.collection.collect_wos --fresh"; do
     name="${step%%:*}"; mod="${step#*:}"
     echo; echo "  collecting $name"
-    $PY -m "$mod" || echo "  WARNING: $name collection failed, cache intact, rerunnable"
+    $PY -m $mod || echo "  WARNING: $name collection failed, cache intact, rerunnable"
 done
 for step in "OpenAlex:scripts.cleaning.clean_openalex_outcomes" \
             "Scopus:scripts.cleaning.clean_scopus_outcomes" \
