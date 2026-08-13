@@ -23,7 +23,7 @@ STRING_COLUMNS = [
     "project_title",
     "grant_reference",
     "project_openalex_url",
-    "authors",
+    "author",
     "institutions",
     "topics",
     "doi",
@@ -53,14 +53,14 @@ CATEGORY_COLUMNS = [
     "subfield"
 ]
 
-def clean_authors(authors):
+def clean_author(author):
     """
     Normalise semicolon-separated author names.
     """
-    if pd.isna(authors):
+    if pd.isna(author):
         return pd.NA
     cleaned = []
-    for name in str(authors).split(";"):
+    for name in str(author).split(";"):
         name = name.strip()
         if not name:
             continue
@@ -108,8 +108,8 @@ def main():
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
     # Extract outcome id from urls
-    df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id)
-    df["authors_clean"] = df["authors"].apply(clean_authors)
+    df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id).astype("string")
+    df["author_clean"] = df["author"].apply(clean_author)
 
     output_file = OUTPUT_DIR / "openalex_all_outcomes_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")

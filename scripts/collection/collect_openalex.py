@@ -438,7 +438,7 @@ def extract_work_metadata(w):
     """
     Extracts and standardises metadata fields from OpenAlex works.
     """
-    authors = "; ".join(dict.fromkeys(a["author"]["display_name"]
+    author = "; ".join(dict.fromkeys(a["author"]["display_name"]
                 for a in w.get("authorships", [])
                 if a.get("author") and a["author"].get("display_name")))
     institutions = "; ".join(dict.fromkeys(inst["display_name"]
@@ -456,7 +456,7 @@ def extract_work_metadata(w):
         "title": w.get("title"),
         "type": w.get("type"),
         "publication_date": w.get("publication_date"),
-        "authors": authors,
+        "author": author,
         "institutions": institutions,
         "cited_by": w.get("cited_by_count"),
         "fwci": w.get("fwci"),
