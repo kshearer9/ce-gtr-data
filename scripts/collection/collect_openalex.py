@@ -441,6 +441,23 @@ def extract_work_metadata(w):
     authors = "; ".join(dict.fromkeys(a["author"]["display_name"]
                 for a in w.get("authorships", [])
                 if a.get("author") and a["author"].get("display_name")))
+
+    # Aligned per-author fields. "authors" above is deduplicated, so its
+    # positions cannot be relied on; these three are built in authorship order
+    # and are always the same length, with an empty entry where a value is
+    # missing. An ORCID is only kept when author.id is also present, because
+    # OpenAlex occasionally attaches another author's ORCID to an authorship
+    # that has no id of its own.
+    author_names, author_ids, author_orcids = [], [], []
+    for a in w.get("authorships", []):
+        author = (a or {}).get("author") or {}
+        if not author:
+            continue
+        author_id = author.get("id") or ""
+        author_names.append(str(author.get("display_name") or ""))
+        author_ids.append(str(author_id))
+        author_orcids.append(str(author.get("orcid") or "") if author_id else "")
+
     institutions = "; ".join(dict.fromkeys(inst["display_name"]
                 for a in w.get("authorships", [])
                 for inst in a.get("institutions", []) if inst.get("display_name")))
@@ -457,6 +474,9 @@ def extract_work_metadata(w):
         "type": w.get("type"),
         "publication_date": w.get("publication_date"),
         "authors": authors,
+        "author_names": "; ".join(author_names),
+        "author_ids": "; ".join(author_ids),
+        "author_orcids": "; ".join(author_orcids),
         "institutions": institutions,
         "cited_by": w.get("cited_by_count"),
         "fwci": w.get("fwci"),

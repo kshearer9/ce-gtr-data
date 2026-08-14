@@ -280,17 +280,42 @@ def retrieve_record(eid, session):
 # ---------------------------------------------------------------------------
 
 def parse_authors(authors):
+    """
+    Flatten the Scopus author block.
+
+    "authors" is kept exactly as before for backwards compatibility. The three
+    fields added alongside it are built in author order and are always the same
+    length, so position i refers to the same person in each:
+
+      author_ids          Scopus Author ID (@auid), present on every author
+      author_given_names  ce:given-name, the FULL forename. The indexed name
+                          gives only "Smith J.", which cannot distinguish
+                          Jianguo from Jianhui, so this is what makes
+                          disambiguation possible without an ORCID.
+      author_names        the indexed name, aligned to the two above
+    """
     if not isinstance(authors, list):
-        return {"authors": None}
-    
+        return {"authors": None, "author_names": None,
+                "author_ids": None, "author_given_names": None}
+
     names = []
+    aligned_names, auids, given_names = [], [], []
     for author in authors:
         if not isinstance(author, dict):
             continue
         name = (author.get("ce:indexed-name") or author.get("ce:surname"))
         if name:
             names.append(name)
-    return {"authors": "; ".join(names)}
+        aligned_names.append(str(name or ""))
+        auids.append(str(author.get("@auid") or ""))
+        given_names.append(str(author.get("ce:given-name") or ""))
+
+    return {
+        "authors": "; ".join(names),
+        "author_names": "; ".join(aligned_names),
+        "author_ids": "; ".join(auids),
+        "author_given_names": "; ".join(given_names),
+    }
 
 
 def parse_institutions(institutions, eid=None, outcome_id=None, doi=None, project_id=None):
