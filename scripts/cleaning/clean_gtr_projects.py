@@ -4,6 +4,7 @@ from utils.constants import TEXT_TO_REPLACE
 from utils.cleaning import (normalise_name, convert_to_string, convert_to_date,
                             clean_text_columns, convert_to_category, 
                             convert_to_numeric)
+from utils.col_types import PROJECT_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -94,7 +95,7 @@ def main():
         raise FileNotFoundError(
             "Could not find gtr_projects_latest.csv")
             
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, PROJECT_COLUMN_TYPES)
     df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLS)
     df = convert_to_numeric(df, *NUMERIC_COLS)

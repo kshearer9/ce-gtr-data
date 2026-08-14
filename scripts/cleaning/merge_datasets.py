@@ -5,6 +5,7 @@ import subprocess
 import sys
 import unicodedata
 import pandas as pd
+from utils.col_types import PROJECT_COLUMN_TYPES, OUTCOME_COLUMN_TYPES, read_csv
 
 
 # ---------------------------------------------------------------------------
@@ -886,8 +887,8 @@ def main():
             f"OpenAlex dataset not found: {openalex_file}"
         )
 
-    gtr_df = pd.read_csv(gtr_file, encoding="utf-8")
-    openalex_df = pd.read_csv(openalex_file, encoding="utf-8")
+    gtr_df = read_csv(gtr_file, PROJECT_COLUMN_TYPES)
+    openalex_df = read_csv(gtr_file, PROJECT_COLUMN_TYPES)
 
     comparison_df = compare_openalex_gtr(gtr_df, openalex_df)
 
@@ -973,11 +974,7 @@ def main():
             raise FileNotFoundError(
                 f"{source} outcome dataset not found: {outcome_file}")
 
-        outcome_data[source] = pd.read_csv(
-            outcome_file,
-            encoding="utf-8",
-            dtype={"outcome_id": "string"}
-        )
+        outcome_data[source] = read_csv(outcome_file, OUTCOME_COLUMN_TYPES)
 
     outcome_map_file = OUTPUT_DIR / "project_outcome_map.csv"
 

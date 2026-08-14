@@ -4,6 +4,7 @@ from utils.cleaning import (normalise_name, convert_to_string,
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -28,7 +29,6 @@ STRING_COLUMNS = [
     "topics",
     "doi",
     "url",
-    "openalex_url",
     "year"
 ]
 
@@ -96,7 +96,7 @@ def main():
         raise FileNotFoundError(
             "Could not find openalex_outcomes_latest.csv")
     
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)

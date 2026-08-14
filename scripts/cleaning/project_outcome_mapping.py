@@ -9,6 +9,7 @@ Outcomes linked to multiple projects are retained as separate project rows.
 from pathlib import Path
 import pandas as pd
 import re
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -410,10 +411,10 @@ def main():
     wos_file = INPUT_DIR / "wos_all_outcomes_clean.csv"
 
     # Read data
-    gtr_df = pd.read_csv(gtr_file, encoding = "utf-8", dtype = {"outcome_id": "string"})
-    openalex_df = pd.read_csv(openalex_file, encoding = "utf-8", dtype = {"outcome_id": "string"})
-    scopus_df = pd.read_csv(scopus_file, encoding = "utf-8", dtype = {"outcome_id": "string"})
-    wos_df = pd.read_csv(wos_file, encoding = "utf-8", dtype = {"outcome_id": "string"})
+    gtr_df = read_csv(gtr_file, OUTCOME_COLUMN_TYPES)
+    openalex_df = read_csv(openalex_file, OUTCOME_COLUMN_TYPES)
+    scopus_df = read_csv(scopus_file, OUTCOME_COLUMN_TYPES)
+    wos_df = read_csv(wos_file, OUTCOME_COLUMN_TYPES)
 
     original_counts = {
         "gtr": len(gtr_df),

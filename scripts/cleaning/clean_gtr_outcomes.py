@@ -20,6 +20,7 @@ import numpy as np
 import re
 from utils.cleaning import (normalise_name, clean_text, convert_to_numeric,
                             convert_to_category, convert_to_date, convert_to_bool)
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -97,60 +98,91 @@ def clean_doi_and_url(df):
     df = df.drop(columns=url_cols, errors="ignore")
     return df
 
+def clean_year(value):
+    """
+    Clean a year value.
+
+    - Converts numeric/string years to a 4-digit string.
+    - Removes trailing '.0' from values such as '2024.0'.
+    - Converts 0 and invalid years to missing.
+    - Returns pandas string-compatible values.
+    """
+    if pd.isna(value):
+        return pd.NA
+    value = str(value).strip()
+    # Remove trailing .0 from values such as "2024.0"
+    value = re.sub(r"\.0$", "", value)
+    # Only accept four-digit years
+    if re.fullmatch(r"\d{4}", value):
+        year = int(value)
+        # Reasonable year range
+        if 1000 <= year <= 2100:
+            return value
+    return pd.NA
 
 def merge_date(df):
     """
-    Merge all year/date fields into a single 'year' column while preserving
-    publication date as 'date_published'.
-    'year' is a generalised year field populated from:
-    - datePublished
-    - yearFirstProvided
-    - yearsOfDissemination
-    - yearEstablished
-    - yearDevelopmentCompleted
-    - yearProtectionGranted
-    - start/end dates
+    Merge all year/date fields into a single string 'year' column while
+    preserving publication date separately.
     """
     df["year"] = pd.Series(pd.NA, index=df.index, dtype="string")
     # Preserve publication date separately
     if "datePublished" in df.columns:
         df["date_published"] = df["datePublished"]
+
     year_columns = [
         "datePublished",
         "yearFirstProvided",
         "yearsOfDissemination",
         "yearEstablished",
         "yearDevelopmentCompleted",
-        "yearProtectionGranted"]
+        "yearProtectionGranted"
+    ]
     for col in year_columns:
-        if col in df.columns:
-            if col == "datePublished":
-                df["year"] = df["year"].fillna(df[col].dt.year.astype("string"))
-            elif col == "yearsOfDissemination":
-                df["year"] = df["year"].fillna(df[col].astype("string").str
-                                               .replace(r"\s*,\s*", "; ", regex=True))
-            else:
-                df["year"] = df["year"].fillna(df[col].astype("string"))
-    # If start and end dates are provided, convert them to years
+        if col not in df.columns:
+            continue
+        if col == "datePublished":
+            df["year"] = df["year"].fillna(
+                df[col].dt.year.astype("Int64").astype("string"))
+        elif col == "yearsOfDissemination":
+            df["year"] = df["year"].fillna(
+                df[col]
+                .astype("string")
+                .str.replace(r"\s*,\s*", "; ", regex=True)
+                .str.replace(r"\.0$", "", regex=True))
+        else:
+            df["year"] = df["year"].fillna(
+                df[col].apply(clean_year).astype("string"))
+
+    # If start/end dates are provided, use their years
     if "start" in df.columns:
+        df["start"] = pd.to_datetime(df["start"], errors="coerce")
         start_year = df["start"].dt.year
         if "end" in df.columns:
+            df["end"] = pd.to_datetime(df["end"], errors="coerce")
             end_year = df["end"].dt.year
             missing_year = df["year"].isna()
-            df.loc[missing_year, "year"] = df.loc[missing_year].apply(
-                lambda row: ("; ".join(str(year) for year in range(
-                    int(start_year[row.name]),
-                    int(end_year[row.name]) + 1))
-                    if pd.notna(end_year[row.name])
-                    and pd.notna(start_year[row.name])
-                    and end_year[row.name] >= start_year[row.name]
-                    else str(int(start_year[row.name]))
-                    if pd.notna(start_year[row.name])
-                    else pd.NA), axis=1)
+            for idx in df.index[missing_year]:
+                start = start_year.loc[idx]
+                end = end_year.loc[idx]
+                if pd.notna(start):
+                    if pd.notna(end) and end >= start:
+                        df.loc[idx, "year"] = "; ".join(
+                            str(year) for year in range(int(start), int(end) + 1))
+                    else:
+                        df.loc[idx, "year"] = str(int(start))
         else:
-            df["year"] = df["year"].fillna(start_year.astype("string"))
-    # Remove the source year/date fields
-    df = df.drop(columns=year_columns + ["start", "end"], errors="ignore")
+            df["year"] = df["year"].fillna(
+                start_year.astype("Int64").astype("string"))
+
+    # Remove source date/year fields
+    df = df.drop(
+        columns=year_columns + ["start", "end"],
+        errors="ignore"
+    )
+    # Final guarantee that year is string
+    df["year"] = df["year"].astype("string")
+
     return df
             
 
@@ -199,7 +231,7 @@ def rename_columns(df, extra_map=None):
 
 
 def convert_to_string(df, *extra_cols):
-    """ Converts columns to string type. """
+    """Converts columns to string type."""
     string_cols = STRING_COLS.copy()
     string_cols.extend(extra_cols)
     for col in string_cols:
@@ -236,7 +268,6 @@ def artisticandcreativeproducts(df, outcome_type):
     df = clean_df(df)
     df = drop_columns(df, outcome_type)
     df = rename_columns(df, {"yearFirstProvided": "year"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_category(df, "type")
     df = clean_text_columns(df)
     df = convert_to_string(df)
@@ -270,7 +301,9 @@ def disseminations(df, outcome_type):
                               "geographic_reach")
     df = convert_to_bool(df, "part_of_official_scheme")
     df = clean_text_columns(df)
-    df = convert_to_string(df, "results", "year")
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
+    df = convert_to_string(df, "results")
     return df
 
 
@@ -285,6 +318,8 @@ def furtherfundings(df, outcome_type):
     df = convert_to_category(df, "organisation", "department", "sector", 
                                   "country", "currency_code")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "narrative", "organisation", "department", 
                            "further_funding_id")
     return df
@@ -296,11 +331,12 @@ def intellectualproperties(df, outcome_type):
     df = rename_columns(df, {"patentId": "patent_id",
                              "yearProtectionGranted": "year",
                              "patentUrl": "patent_url"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_date(df, "start", "end")
     df = convert_to_category(df, "protection", "type")
     df = convert_to_bool(df, "licensed")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "patent_id", "patent_url")
     return df
 
@@ -317,6 +353,8 @@ def policyinfluences(df, outcome_type):
         df["policy_areas"] = df["area.item"].apply(
             lambda x: "; ".join(x) if isinstance(x, list) else x)
     df = clean_text_columns(df, "influence", "guideline_title", "methods")
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "influence", "guideline_title", "methods")
     return df
 
@@ -327,9 +365,10 @@ def products(df, outcome_type):
     df = rename_columns(df, {"clinicalTrial": "clinical_trial",
                              "ukcrnIsctnId": "clinical_trial_id",
                              "yearDevelopmentCompleted": "year"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_category(df, "type", "stage", "status")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "clinical_trial", "clinical_trial_id")
     return df
 
@@ -363,6 +402,8 @@ def publications(df, outcome_type):
     df = convert_to_category(df, "type", "journal_title")
     df = clean_text_columns(df, "abstract", "other_info", "series_title",
                             "sub_title", "volume_title", "chapter_title")
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "abstract", "other_info", "series_title",
                             "sub_title", "volume_title", "chapter_title", 
                             "pubmed_id", "isbn", "issn", "series_num", 
@@ -377,10 +418,11 @@ def researchdatabaseandmodels(df, outcome_type):
     df = drop_columns(df, outcome_type)
     df = rename_columns(df, {"providedToOthers": "provided_to_others",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_category(df, "type")
     df = convert_to_bool(df, "provided_to_others")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df)
     return df
 
@@ -392,11 +434,12 @@ def researchmaterials(df, outcome_type):
                              "softwareOpenSourced": "software_open_sourced",
                              "providedToOthers": "provided_to_others",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_category(df, "type")
     df = convert_to_bool(df, "provided_to_others", "software_developed",
                               "software_open_sourced")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df)
     return df
 
@@ -407,10 +450,11 @@ def softwareandtechnicalproducts(df, outcome_type):
     df = rename_columns(df, {"softwareOpenSourced": "software_open_sourced",
                              "openSourceLicense": "open_source_license",
                              "yearFirstProvided": "year"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_category(df, "type")
     df = convert_to_bool(df, "software_open_sourced")
     df = clean_text_columns(df)
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "open_source_license")    
     return df
 
@@ -425,9 +469,10 @@ def spinouts(df, outcome_type):
                              "yearEstablished": "year",
                              "ipExploited": "ip_exploited",
                              "jointVenture": "joint_venture"})
-    df = convert_to_numeric(df, "year")
     df = convert_to_bool(df, "ip_exploited", "joint_venture")
     df = clean_text_columns(df, "company_description")
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
     df = convert_to_string(df, "company_name", "reg_num")
     return df
 
@@ -445,7 +490,9 @@ def all_outcomes(df, outcome_type):
     df = rename_columns(df)
     df = convert_to_category(df, "type")
     df = clean_text_columns(df)
-    df = convert_to_string(df, "year", "author", "organisations")
+    if "year" in df.columns:
+        df["year"] = df["year"].apply(clean_year).astype("string")
+    df = convert_to_string(df, "author", "organisations")
     return df
 
 
@@ -470,7 +517,7 @@ def main():
             print(f"No cleaning function found for '{outcome_type}'\n")
             continue
         print(f"Cleaning: '{outcome_type}'")
-        df = pd.read_csv(file, encoding ="utf-8")
+        df = read_csv(file, OUTCOME_COLUMN_TYPES)
         try:
             df = cleaning_function(df, outcome_type)
         except Exception as e:

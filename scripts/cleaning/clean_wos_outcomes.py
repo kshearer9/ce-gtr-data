@@ -22,6 +22,8 @@ from utils.cleaning import (normalise_name, convert_to_string,
                             clean_text_columns,
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
+
 
 # ---------------------------------------------------------------------------
 # FILE PATHS
@@ -62,7 +64,8 @@ STRING_COLUMNS = [
     "citation_topic_meso",
     "citation_topic_micro",
     "sdg_categories",
-    "year"
+    "year",
+    "early_access_year"
 ]
 
 TEXT_COLUMNS = [
@@ -72,11 +75,8 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "early_access_year",
     "times_cited_core",
     "times_cited_all_db",
-    "usage_180days",
-    "usage_alltime",
     "reference_count",
     "n_addresses"
 ]
@@ -202,7 +202,7 @@ def main():
         raise FileNotFoundError(
             "Could not find wos_outcomes_latest.csv")
 
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df, duplicate_rows = clean_df(df)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)

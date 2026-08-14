@@ -20,6 +20,7 @@ from utils.cleaning import (normalise_name, convert_to_string,
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE PATHS
@@ -57,7 +58,10 @@ STRING_COLUMNS = [
     "subject_areas",
     "keywords",
     "journal",
-    "year"
+    "year",
+    "source_id",
+    "pubmed_id"
+
 ]
 
 TEXT_COLUMNS = [
@@ -67,8 +71,6 @@ TEXT_COLUMNS = [
 
 NUMERIC_COLUMNS = [
     "cited_by",
-    "source_id",
-    "pubmed_id",
     "reference_count"
 ]
 
@@ -77,7 +79,7 @@ DATE_COLUMNS = [
 ]
 
 CATEGORY_COLUMNS = [
-    "type",
+    "type"
 ]
 
 COLS_TO_DROP = [
@@ -173,7 +175,7 @@ def main():
         raise FileNotFoundError(
             "Could not find scopus_outcomes_latest.csv")
     
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df, duplicate_rows = clean_df(df)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)
@@ -184,6 +186,8 @@ def main():
         df["year"] = df["publication_date"].apply(
             lambda x: str(x.year) if pd.notna(x) else pd.NA)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
+    if "issn" in df.columns:
+        df["issn"] = df["issn"].apply(clean_issn)
     df = convert_to_string(df, *STRING_COLUMNS)
     df["author_clean"] = df["author"].apply(clean_author)
     df["subject_areas"] = df["subject_areas"].str.replace(
@@ -210,8 +214,6 @@ def main():
         inst_df = inst_df[inst_df["_merge"] == "left_only"].drop(
             columns="_merge")
         inst_df = convert_to_category(inst_df, "city", "country")
-        if "issn" in df.columns:
-            df["issn"] = df["issn"].apply(clean_issn)
         inst_df = convert_to_string(inst_df, "institution_id", "institution", 
                                     *STRING_COLUMNS)
         inst_output_file = OUTPUT_DIR / "scopus_institutions_clean.csv"
