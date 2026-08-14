@@ -189,6 +189,27 @@ def clean_df(df):
     df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
     return df, removed_dupes
 
+def drop_empty_columns(df):
+    """Drop columns containing no non-empty values."""
+    empty_columns = []
+    for column in df.columns:
+        values = df[column]
+        # Missing values
+        if values.isna().all():
+            empty_columns.append(column)
+            continue
+        # Also treat empty/whitespace-only strings as empty
+        non_empty = values.notna() & values.astype(str).str.strip().ne("")
+        if not non_empty.any():
+            empty_columns.append(column)
+    if empty_columns:
+        print()
+        print("Dropped empty columns:")
+        for column in empty_columns:
+            print(f"  - {column}")
+        df = df.drop(columns=empty_columns)
+    return df
+
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -234,6 +255,7 @@ def main():
     if "doi" in df.columns:
         df["url"] = df["doi"].apply(make_doi_url)
     df["author_clean"] = df["author"].apply(clean_author)
+    df = drop_empty_columns(df)
     output_file = OUTPUT_DIR / "wos_all_outcomes_clean.csv"
     df.to_csv(output_file, index=False, encoding="utf-8")
 
