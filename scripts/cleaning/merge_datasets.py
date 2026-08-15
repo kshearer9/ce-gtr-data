@@ -6,7 +6,7 @@ import sys
 import unicodedata
 import pandas as pd
 from utils.col_types import PROJECT_COLUMN_TYPES, OUTCOME_COLUMN_TYPES, read_csv
-
+from utils.merge_type_map import GTR_TYPE_MAP, SCOPUS_TYPE_MAP, WOS_TYPE_MAP, OPENALEX_TYPE_MAP
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -18,12 +18,16 @@ PROJECT_INPUT_DIR = ROOT_DIR / "data" / "cleaned"
 OUTCOME_INPUT_DIR = PROJECT_INPUT_DIR / "outcomes"
 OUTPUT_DIR = PROJECT_INPUT_DIR / "merged"
 DISAGREEMENT_DIR = OUTPUT_DIR / "disagreements"
+PROJECT_DISAGREEMENT_DIR = DISAGREEMENT_DIR / "projects"
+OUTCOME_DISAGREEMENT_DIR = DISAGREEMENT_DIR / "outcomes"
 
 for directory in (
     PROJECT_INPUT_DIR,
     OUTCOME_INPUT_DIR,
     OUTPUT_DIR,
-    DISAGREEMENT_DIR):
+    DISAGREEMENT_DIR,
+    PROJECT_DISAGREEMENT_DIR,
+    OUTCOME_DISAGREEMENT_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 SOURCE_PRIORITY = ["gtr", "scopus", "wos", "openalex"]
@@ -33,6 +37,13 @@ VALIDATION_FILE = (
 )
 
 VALIDATE_SCRIPT = Path(__file__).resolve().parent / "validate_urls.py"
+
+TYPE_MAPS = {
+    "gtr": GTR_TYPE_MAP,
+    "scopus": SCOPUS_TYPE_MAP,
+    "wos": WOS_TYPE_MAP,
+    "openalex": OPENALEX_TYPE_MAP,
+}
 
 # ---------------------------------------------------------------------------
 # PROJECT MERGE
@@ -116,14 +127,20 @@ def merge_projects(gtr_df, openalex_df):
 # COMPARE PROJECT METADATA
 # ---------------------------------------------------------------------------
 
-def compare_openalex_gtr(gtr_df, openalex_df):
-    # Harmonise OpenAlex funding types with GtR grant categories
-    if "funding_type" in openalex_df.columns:
-        openalex_df["funding_type"] = openalex_df["funding_type"].replace({
-            "research": "research grant",
-            "voucher": "vouchers",
-            "training": "training grant"
-        })
+def normalise_funding_type(value):
+    """Normalise funding types for cross-source comparison."""
+    if pd.isna(value):
+        return pd.NA
+    value = str(value).strip().lower()
+    funding_type_map = {
+        "research grant": "collaborative r&d",
+        "feasibility studies": "research grant",
+        "eu-funded": "grant"
+    }
+    return funding_type_map.get(value, value)
+
+def compare_projects(gtr_df, openalex_df):
+    """Compare GtR and OpenAlex project metadata and report useful statistics."""
 
     merged = gtr_df.merge(
         openalex_df,
@@ -132,73 +149,281 @@ def compare_openalex_gtr(gtr_df, openalex_df):
         suffixes=("_gtr", "_openalex")
     )
 
-    comparisons = []
+    disagreements = {}
 
-    for _, row in merged.iterrows():
-        record = {"project_id": row["project_id"]}
+    print_summary_header("Project Source Coverage")
+    print(f"{'Records in GtR':<35}: {len(gtr_df):,}")
+    print(f"{'Records in OpenAlex':<35}: {len(openalex_df):,}")
+    print(f"{'Records in both sources':<35}: {len(merged):,}")
 
-        # Compare descriptions
-        gtr_desc = row.get("abstract_text_clean")
-        oa_desc = row.get("description_clean")
+    # Description
+    description_records = []
 
-        record["gtr_description_length"] = (
-            len(str(gtr_desc)) if pd.notna(gtr_desc) else 0)
-        record["openalex_description_length"] = (
-            len(str(oa_desc)) if pd.notna(oa_desc) else 0)
-        record["openalex_description_longer"] = (
-            pd.notna(oa_desc)
-            and len(str(oa_desc)) > len(str(gtr_desc)))
-        record["description_difference"] = str(gtr_desc) != str(oa_desc)
+    gtr_desc = merged.get("abstract_text_clean")
+    oa_desc = merged.get("description_clean")
 
-        # Compare funding amounts
-        gtr_funding = row.get("value_gbp_gtr")
-        oa_funding = row.get("value_gbp_openalex")
+    if gtr_desc is not None and oa_desc is not None:
+        gtr_present = gtr_desc.notna() & gtr_desc.astype(str).str.strip().ne("")
+        oa_present = oa_desc.notna() & oa_desc.astype(str).str.strip().ne("")
+        both_present = gtr_present & oa_present
 
-        record["funding_difference"] = (
-            pd.notna(gtr_funding)
-            and pd.notna(oa_funding)
-            and float(gtr_funding) != float(oa_funding)
-        )
-        record["gtr_funding"] = gtr_funding
-        record["openalex_funding"] = oa_funding
+        agreement = pd.Series(False, index=merged.index)
 
-        # Compare funding types
-        gtr_type = row.get("grant_category")
-        oa_type = row.get("funding_type")
-
-        record["funding_type_difference"] = (
-            pd.notna(gtr_type)
-            and pd.notna(oa_type)
-            and str(gtr_type).lower() != str(oa_type).lower()
-        )
-        record["gtr_grant_category"] = gtr_type
-        record["openalex_funding_type"] = oa_type
-
-        # Compare dates
-        for gtr_col, oa_col, label in [
-            ("start_date_gtr", "start_date_openalex", "start_date"),
-            ("end_date_gtr", "end_date_openalex", "end_date")
-        ]:
-            gtr_date = pd.to_datetime(row.get(gtr_col), errors="coerce")
-            oa_date = pd.to_datetime(row.get(oa_col), errors="coerce")
-
-            if pd.notna(gtr_date) and pd.notna(oa_date):
-                date_difference_days = (oa_date - gtr_date).days
-            else:
-                date_difference_days = None
-
-            record[f"{label}_difference"] = (
-                date_difference_days != 0
-                if date_difference_days is not None
-                else False
+        for index in merged.index[both_present]:
+            gtr_normalised = normalise_for_comparison(
+                gtr_desc.loc[index], "description"
             )
-            record[f"{label}_difference_days"] = date_difference_days
-            record[f"gtr_{label}"] = gtr_date
-            record[f"openalex_{label}"] = oa_date
+            oa_normalised = normalise_for_comparison(
+                oa_desc.loc[index], "description"
+            )
 
-        comparisons.append(record)
+            if gtr_normalised == oa_normalised:
+                agreement.loc[index] = True
+            else:
+                description_records.append({
+                    "project_id": merged.loc[index, "project_id"],
+                    "gtr_description": gtr_desc.loc[index],
+                    "openalex_description": oa_desc.loc[index],
+                    "gtr_description_length": len(str(gtr_desc.loc[index])),
+                    "openalex_description_length": len(
+                        str(oa_desc.loc[index])
+                    )
+                })
 
-    return pd.DataFrame(comparisons)
+        description_disagreements = pd.DataFrame(description_records)
+
+        print_summary_header("Project Description")
+        print(f"{'GtR populated':<35}: {gtr_present.sum():,}")
+        print(f"{'OpenAlex populated':<35}: {oa_present.sum():,}")
+        print(f"{'Agree after normalisation':<35}: {agreement.sum():,}")
+        print(
+            f"{'Disagree':<35}: "
+            f"{(both_present & ~agreement).sum():,}"
+        )
+
+        if not description_disagreements.empty:
+            gtr_lengths = description_disagreements[
+                "gtr_description_length"
+            ]
+            oa_lengths = description_disagreements[
+                "openalex_description_length"
+            ]
+
+            print(
+                f"{'OpenAlex longer':<35}: "
+                f"{(oa_lengths > gtr_lengths).sum():,}"
+            )
+            print(
+                f"{'GtR longer':<35}: "
+                f"{(gtr_lengths > oa_lengths).sum():,}"
+            )
+
+        disagreements["description"] = description_disagreements
+
+    else:
+        disagreements["description"] = pd.DataFrame()
+
+    # ---------------------------------------------------------------
+    # FUNDING
+    # ---------------------------------------------------------------
+
+    funding_records = []
+
+    gtr_funding = merged.get("value_gbp_gtr")
+    oa_funding = merged.get("value_gbp_openalex")
+
+    if gtr_funding is not None and oa_funding is not None:
+        gtr_funding = pd.to_numeric(gtr_funding, errors="coerce")
+        oa_funding = pd.to_numeric(oa_funding, errors="coerce")
+
+        both_present = gtr_funding.notna() & oa_funding.notna()
+
+        difference = (oa_funding - gtr_funding).abs()
+        exact = both_present & difference.eq(0)
+        small = both_present & (difference > 0) & (difference <= 100)
+        medium = both_present & (difference > 100) & (difference <= 1000)
+        large = both_present & (difference > 1000)
+
+        for index in merged.index[both_present & ~exact]:
+            funding_records.append({
+                "project_id": merged.loc[index, "project_id"],
+                "gtr_funding": gtr_funding.loc[index],
+                "openalex_funding": oa_funding.loc[index],
+                "difference_gbp": (
+                    oa_funding.loc[index] - gtr_funding.loc[index]
+                )
+            })
+
+        funding_disagreements = pd.DataFrame(funding_records)
+
+        print_summary_header("Project Funding")
+        print(f"{'GtR populated':<35}: {gtr_funding.notna().sum():,}")
+        print(f"{'OpenAlex populated':<35}: {oa_funding.notna().sum():,}")
+        print(f"{'Exact agreement':<35}: {exact.sum():,}")
+        print(f"{'Difference ≤ £100':<35}: {small.sum():,}")
+        print(f"{'Difference £100–£1,000':<35}: {medium.sum():,}")
+        print(f"{'Difference > £1,000':<35}: {large.sum():,}")
+
+        openalex_higher = both_present & (oa_funding > gtr_funding)
+        gtr_higher = both_present & (gtr_funding > oa_funding)
+
+        print(f"{'OpenAlex higher':<35}: {openalex_higher.sum():,}")
+        print(f"{'GtR higher':<35}: {gtr_higher.sum():,}")
+
+        disagreements["funding"] = funding_disagreements
+
+    else:
+        disagreements["funding"] = pd.DataFrame()
+
+    # ---------------------------------------------------------------
+    # FUNDING TYPE
+    # ---------------------------------------------------------------
+
+    funding_type_records = []
+
+    if (
+        "grant_category" in merged.columns
+        and "funding_type" in merged.columns
+    ):
+        merged["funding_type"] = merged["funding_type"].replace({
+            "research": "research grant",
+            "voucher": "vouchers",
+            "training": "training grant"
+        })
+
+        gtr_type = merged["grant_category"]
+        oa_type = merged["funding_type"]
+
+        both_present = (
+            gtr_type.notna()
+            & oa_type.notna()
+            & gtr_type.astype(str).str.strip().ne("")
+            & oa_type.astype(str).str.strip().ne("")
+        )
+
+        agreement = pd.Series(False, index=merged.index)
+
+        for index in merged.index[both_present]:
+            gtr_normalised = normalise_funding_type(
+                gtr_type.loc[index]
+            )
+            oa_normalised = normalise_funding_type(
+                oa_type.loc[index]
+            )
+
+            agreement.loc[index] = (
+                gtr_normalised == oa_normalised
+            )
+
+            if not agreement.loc[index]:
+                funding_type_records.append({
+                    "project_id": merged.loc[index, "project_id"],
+                    "gtr_grant_category": gtr_type.loc[index],
+                    "openalex_funding_type": oa_type.loc[index]
+                })
+
+        funding_type_disagreements = pd.DataFrame(
+            funding_type_records
+        )
+
+        print_summary_header("Project Funding Type")
+        print(f"{'GtR populated':<35}: {gtr_type.notna().sum():,}")
+        print(f"{'OpenAlex populated':<35}: {oa_type.notna().sum():,}")
+        print(f"{'Agree after mapping':<35}: {agreement.sum():,}")
+        print(
+            f"{'Disagree':<35}: "
+            f"{(both_present & ~agreement).sum():,}"
+        )
+
+        disagreements["funding_type"] = funding_type_disagreements
+
+    else:
+        disagreements["funding_type"] = pd.DataFrame()
+
+    # ---------------------------------------------------------------
+    # DATES
+    # ---------------------------------------------------------------
+
+    for column in ["start_date", "end_date"]:
+
+        gtr_column = f"{column}_gtr"
+        oa_column = f"{column}_openalex"
+
+        if (
+            gtr_column not in merged.columns
+            or oa_column not in merged.columns
+        ):
+            disagreements[column] = pd.DataFrame()
+            continue
+
+        gtr_dates = pd.to_datetime(
+            merged[gtr_column],
+            errors="coerce"
+        )
+        oa_dates = pd.to_datetime(
+            merged[oa_column],
+            errors="coerce"
+        )
+
+        both_present = gtr_dates.notna() & oa_dates.notna()
+
+        difference_days = (
+            oa_dates - gtr_dates
+        ).dt.days
+
+        absolute_difference = difference_days.abs()
+
+        exact = both_present & absolute_difference.eq(0)
+        one_day = both_present & absolute_difference.eq(1)
+        more_than_one_day = (
+            both_present & absolute_difference.gt(1)
+        )
+
+        date_records = []
+
+        for index in merged.index[more_than_one_day | one_day]:
+            date_records.append({
+                "project_id": merged.loc[index, "project_id"],
+                f"gtr_{column}": gtr_dates.loc[index],
+                f"openalex_{column}": oa_dates.loc[index],
+                "difference_days": difference_days.loc[index]
+            })
+
+        date_disagreements = pd.DataFrame(date_records)
+
+        print_summary_header(
+            f"Project {column.replace('_', ' ').title()}"
+        )
+        print(
+            f"{'GtR populated':<35}: "
+            f"{gtr_dates.notna().sum():,}"
+        )
+        print(
+            f"{'OpenAlex populated':<35}: "
+            f"{oa_dates.notna().sum():,}"
+        )
+        print(f"{'Exact agreement':<35}: {exact.sum():,}")
+        print(f"{'Off by 1 day':<35}: {one_day.sum():,}")
+        print(
+            f"{'Off by >1 day':<35}: "
+            f"{more_than_one_day.sum():,}"
+        )
+
+        earlier = both_present & difference_days.lt(0)
+        later = both_present & difference_days.gt(0)
+
+        print(
+            f"{'OpenAlex earlier':<35}: "
+            f"{earlier.sum():,}"
+        )
+        print(
+            f"{'OpenAlex later':<35}: "
+            f"{later.sum():,}"
+        )
+
+        disagreements[column] = date_disagreements
+
+    return disagreements
 
 
 # ---------------------------------------------------------------------------
@@ -583,7 +808,7 @@ def merge_source_title_and_journal(df, sources=None):
     print(f"{'Source title disagreements':<35}: "
           f"{source_title_journal_disagreements:,}")
     if not source_title_disagreements.empty:
-        disagreement_file = DISAGREEMENT_DIR / "source_title_disagreements.csv"
+        disagreement_file = OUTCOME_DISAGREEMENT_DIR / "source_title_disagreements.csv"
         source_title_disagreements.to_csv(
             disagreement_file, index=False, encoding="utf-8")
         print(f"{'Disagreements Saved':<35}: {disagreement_file.name}")
@@ -644,12 +869,127 @@ def merge_majority_column(df, column, sources):
               f"{count:,}")
     return df
 
+def map_outcome_types(df, source, type_map):
+    """
+    Map raw source types to unified type/subtype values.
+    Missing values -> ('other', 'other')
+    Unknown values -> ('other', 'other') with a warning.
+    """
+    raw_column = f"{source}_type"
+    if raw_column not in df.columns:
+        return df, set()
+    unmapped = set()
+    mapped_types = []
+    mapped_subtypes = []
+    for value in df[raw_column]:
+        if pd.isna(value) or not str(value).strip():
+            mapped_types.append(pd.NA)
+            mapped_subtypes.append(pd.NA)
+            continue
+        raw_value = str(value).strip().lower()
+        if raw_value not in type_map:
+            unmapped.add(raw_value)
+            mapped_types.append("other")
+            mapped_subtypes.append("other")
+            continue
+        mapped_type, mapped_subtype = type_map[raw_value]
+        mapped_types.append(mapped_type)
+        mapped_subtypes.append(mapped_subtype)
+    df[f"{source}_type"] = mapped_types
+    df[f"{source}_subtype"] = mapped_subtypes
+    if unmapped:
+        print(f"WARNING: {source} has {len(unmapped)} "
+             f"unmapped type categor{'y' if len(unmapped) == 1 else 'ies'}:")
+        for category in sorted(unmapped):
+            print(f"  - {category}")
+    return df, unmapped
+
+def merge_outcome_types(df, sources=None):
+    """
+    Merge mapped outcome types using majority vote, with source priority
+    as the tie-breaker.
+
+    Rules:
+    - Blank values are ignored.
+    - ('other', 'other') is ignored when looking for a useful value.
+    - Majority vote is used among useful values.
+    - If there is no majority, source priority determines the result.
+    - If every source is blank or ('other', 'other'), final value is
+      ('other', 'other').
+    """
+    if sources is None:
+        sources = SOURCE_PRIORITY
+    final_types = []
+    final_subtypes = []
+    for _, row in df.iterrows():
+        values = {}
+        for source in sources:
+            type_column = f"{source}_type"
+            subtype_column = f"{source}_subtype"
+            if type_column not in df.columns:
+                continue
+            source_type = row[type_column]
+            if pd.isna(source_type) or not str(source_type).strip():
+                continue
+            source_type = str(source_type).strip().lower()
+            source_subtype = row.get(subtype_column)
+            if (pd.isna(source_subtype)
+                or not str(source_subtype).strip()):
+                source_subtype = "other"
+            else:
+                source_subtype = str(source_subtype).strip().lower()
+            # Ignore "other / other" during the vote
+            if (source_type == "other"
+                and source_subtype == "other"):
+                continue
+            values[source] = (source_type, source_subtype)
+
+        # No useful values anywhere
+        if not values:
+            final_types.append("other")
+            final_subtypes.append("other")
+            continue
+
+        # Count complete (type, subtype) pairs
+        value_counts = pd.Series(
+            list(values.values()),
+            dtype="object"
+        ).value_counts()
+
+        # Majority requires > 50% of useful sources
+        majority_values = value_counts[
+            value_counts > len(values) / 2]
+
+        if not majority_values.empty:
+            selected_value = majority_values.index[0]
+
+        else:
+            # No majority: use source priority
+            selected_source = next(
+                source
+                for source in sources
+                if source in values)
+            selected_value = values[selected_source]
+        selected_type, selected_subtype = selected_value
+        final_types.append(selected_type)
+        final_subtypes.append(selected_subtype)
+
+    df["type"] = final_types
+    df["subtype"] = final_subtypes
+    return df
+
 
 def check_column_agreement(df, column, sources):
     columns = get_source_columns(df, sources, column)
-    comparison = columns.copy()
+    if not columns:
+        print_summary_header(f"{column.title()} Summary:")
+        print(f"No source columns found for {column}.")
+        return pd.DataFrame(index=df.index), pd.Series(
+            False, index=df.index)
     if "global_outcome_id" in df.columns:
         comparison_columns = ["global_outcome_id"] + columns
+    else:
+        comparison_columns = columns
     comparison = df[comparison_columns].copy()
     source_comparison = comparison[columns].map(
         lambda x: normalise_for_comparison(x, column))
@@ -664,12 +1004,20 @@ def check_column_agreement(df, column, sources):
     print(f"{'Records with Disagreements':<30}: {disagreement.sum():,}")
     return comparison, disagreement
 
-def save_disagreements(disagreements, comparison, column):
+def save_disagreements(disagreements, comparison, column, dataset):
     """Save comparison rows where source values disagree."""
     if not disagreements.any():
         print(f"{'Disagreements Saved':<30}: None")
         return
-    disagreement_file = DISAGREEMENT_DIR / f"{column}_disagreements.csv"
+    if dataset == "projects":
+        disagreement_dir = PROJECT_DISAGREEMENT_DIR
+    elif dataset == "outcomes":
+        disagreement_dir = OUTCOME_DISAGREEMENT_DIR
+    else:
+        raise ValueError(f"Invalid dataset '{dataset}'. "
+                         "Expected 'project' or 'outcome'.")
+    disagreement_dir.mkdir(parents=True, exist_ok=True)
+    disagreement_file = disagreement_dir / f"{column}_disagreements.csv"
     output = comparison.loc[disagreements].copy()
     # Add global outcome ID if available
     if "global_outcome_id" in comparison.columns:
@@ -1000,7 +1348,7 @@ def merge_count(df, column, sources):
     df = merge_preferred_column(df, column, source_columns)
     print(f"{'Merge Rule':<30}: First populated source "
           f"({' → '.join(source.title() for source in sources)})")
-    save_disagreements(disagreements, comparison, column)  
+    save_disagreements(disagreements, comparison, column, "outcomes")  
     df.drop(columns=source_columns, inplace=True, errors="ignore")
     return df
 
@@ -1130,7 +1478,8 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         "publisher",
         "n_addresses",
         "funding_agencies",
-        "funding_grant_ids"
+        "funding_grant_ids",
+        "gtr_outcome_type"
     ]
 
     source_columns_to_remove = [
@@ -1160,15 +1509,44 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         errors="ignore"
     )
 
-    # MERGE TITLE
+    # TITLE MERGE
     for column in ["title"]:
         title_comparison, title_disagreements = check_column_agreement(
             outcomes, column, sources)
         source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, column)
         outcomes = merge_longest_column(outcomes, column, source_columns)
         print(f"{'Merge Rule':<30}: Longest non-missing {column}")
-        save_disagreements(title_disagreements, title_comparison, column)
+        save_disagreements(title_disagreements, title_comparison, column, "outcomes")
         outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
+
+    # TYPE MERGE
+    for source in sources:
+        outcomes, _ = map_outcome_types(
+            outcomes, source, TYPE_MAPS[source])
+    outcomes = merge_outcome_types(outcomes, SOURCE_PRIORITY)
+
+    # Type
+    type_source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "type")
+    type_comparison, type_disagreements = check_column_agreement(
+        outcomes, "type", SOURCE_PRIORITY)
+    save_disagreements(type_disagreements, type_comparison, "type", "outcomes")
+    outcomes.drop(columns=type_source_columns, inplace=True, errors="ignore")
+    print(f"{'Merge Rule':<30}: "
+          "Majority vote among useful types; "
+          "source priority used as fallback; "
+          "('other', 'other') used only when no useful type exists")
+
+    # Subtype
+    subtype_source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "subtype")
+    subtype_comparison, subtype_disagreements = check_column_agreement(
+        outcomes, "subtype", SOURCE_PRIORITY)
+    save_disagreements(subtype_disagreements, subtype_comparison, 
+                       "subtype", "outcomes")
+    outcomes.drop(columns=subtype_source_columns, inplace=True, errors="ignore")
+    print(f"{'Merge Rule':<30}: "
+          "Majority vote among useful types; "
+          "source priority used as fallback; "
+          "('other', 'other') used only when no useful type exists")
 
     # ABSTRACT, DESCRIPTION AND TITLES MERGE
     outcomes = merge_title_and_abstract(outcomes)
@@ -1181,7 +1559,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     outcomes = merge_majority_column(outcomes, "year", year_priority)
     print(f"{'Merge Rule':<30}: First populated source "
           f"({' → '.join(source.title() for source in year_priority)})")
-    save_disagreements(year_disagreements, year_comparison, "year")
+    save_disagreements(year_disagreements, year_comparison, "year", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
     # PUBLICATION DATE MERGE
@@ -1193,7 +1571,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     outcomes = merge_majority_column(outcomes, "publication_date", date_priority)
     print(f"{'Merge Rule':<30}: First populated source "
           f"({' → '.join(source.title() for source in date_priority)})")
-    save_disagreements(date_disagreements, date_comparison, "year")
+    save_disagreements(date_disagreements, date_comparison, "year", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
     # DOI MERGE
@@ -1202,7 +1580,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "doi")
     outcomes = merge_preferred_column(outcomes, "doi", source_columns)
     print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
-    save_disagreements(doi_disagreements, doi_comparison, "doi")
+    save_disagreements(doi_disagreements, doi_comparison, "doi", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
     # ORGANISATION MERGE
@@ -1291,7 +1669,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 
     # Save url disagreements
     if url_disagreements:
-        disagreement_file = DISAGREEMENT_DIR / "url_disagreements.csv"
+        disagreement_file = OUTCOME_DISAGREEMENT_DIR / "url_disagreements.csv"
         pd.DataFrame(url_disagreements).to_csv(
             disagreement_file, index=False, encoding="utf-8")
         print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
@@ -1312,25 +1690,6 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 
     # KEYWORD COVERAGE
     keyword_summary(outcomes)
-
-    # Clean remaining columns that are only from one source
-    source_columns = {}
-
-    # Clean remaining columns that are only from one source
-    source_columns = {}
-    for column in outcomes.columns:
-        for source in sources:
-            prefix = f"{source}_"
-            if column.startswith(prefix):
-                base_column = column[len(prefix):]
-                source_columns.setdefault(base_column, []).append(column)
-                break
-    for base_column, columns in source_columns.items():
-        if len(columns) != 1:
-            continue
-        column = columns[0]
-        outcomes.rename(columns={column: base_column}, inplace=True)
-
     return outcomes
 
 
@@ -1339,14 +1698,6 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--save-comparison",
-        action="store_true",
-        help="Save csv comparing metadata."
-    )
-    args = parser.parse_args()
-
     # ------------------------------------------------------------------
     # PROJECTS
     # ------------------------------------------------------------------
@@ -1365,58 +1716,25 @@ def main():
     gtr_df = read_csv(gtr_file, PROJECT_COLUMN_TYPES)
     openalex_df = read_csv(openalex_file, PROJECT_COLUMN_TYPES)
 
-    comparison_df = compare_openalex_gtr(gtr_df, openalex_df)
-
-    if args.save_comparison:
-        comparison_file = OUTPUT_DIR / "project_metadata_comparison.csv"
-        comparison_df.to_csv(
-            comparison_file,
-            index=False,
-            encoding="utf-8"
-        )
-        print(f"Saved comparison table as {comparison_file.name}")
-
-    project_df = merge_projects(gtr_df, openalex_df)
-    project_output_file = OUTPUT_DIR / "projects.csv"
-    project_df.to_csv(
-        project_output_file,
-        index=False,
-        encoding="utf-8"
-    )
-
     print()
     print("=" * 70)
     print("PROJECT MERGE SUMMARY")
     print("=" * 70)
-    print(f"Rows           : {len(project_df)}")
-    print(f"Columns        : {len(project_df.columns)}")
-    print(f"Saved          : {project_output_file.name}")
-
-    print_summary_header("OpenAlex-GtR Project Comparison Summary:")
-    summary_labels = {
-        "openalex_description_longer": "OpenAlex Longer Description",
-        "description_difference": "Description Difference",
-        "funding_difference": "Funding Difference",
-        "funding_type_difference": "Funding Type Difference",
-        "start_date_difference": "Start Date Difference",
-        "end_date_difference": "End Date Difference"
-    }
-    for col, label in summary_labels.items():
-        if col in comparison_df.columns:
-            print(f"{label:<30}: {comparison_df[col].sum()}")
-
-    print_summary_header("Date Summary:")
-    for date_label, column in [
-        ("Start Date", "start_date_difference_days"),
-        ("End Date", "end_date_difference_days")]:
-        differences = comparison_df[column].dropna().abs()
-        zero_days = (differences == 0).sum()
-        one_day = (differences == 1).sum()
-        more_than_one_day = (differences > 1).sum()
-        print(f"\n{date_label} Differences:")
-        print(f"{'Zero days off':<30}: {zero_days:,}")
-        print(f"{'One day off':<30}: {one_day:,}")
-        print(f"{'More than one day off':<30}: {more_than_one_day:,}")
+    project_df = merge_projects(gtr_df, openalex_df)
+    project_disagreement = compare_projects(gtr_df, openalex_df)
+    # Save project disagreements
+    for column, disagreement_df in project_disagreement.items():
+        if disagreement_df.empty:
+            print(f"{'Disagreements Saved':<35}: None for {column}")
+            continue
+        disagreement_file = (
+            PROJECT_DISAGREEMENT_DIR / f"{column}_disagreements.csv")
+        disagreement_df.to_csv(disagreement_file, index=False,
+                               encoding="utf-8")
+    print(f"\nSaved disagreements to {PROJECT_DISAGREEMENT_DIR}")
+    project_output_file = OUTPUT_DIR / "projects.csv"
+    project_df.to_csv(project_output_file, index=False, encoding="utf-8")
+    print(f"\nSaved projects to: {project_output_file}")
 
     # ------------------------------------------------------------------
     # OUTCOMES
