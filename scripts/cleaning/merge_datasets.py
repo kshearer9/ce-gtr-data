@@ -205,6 +205,13 @@ def compare_openalex_gtr(gtr_df, openalex_df):
 # OUTCOME COLUMN MERGING
 # ---------------------------------------------------------------------------
 
+def get_source_columns(df, sources, column):
+    return [
+        f"{source}_{column}"
+        for source in sources
+        if f"{source}_{column}" in df.columns
+    ]
+
 def normalise_for_comparison(value, column):
     if pd.isna(value):
         return set() if column == "organisation" else pd.NA
@@ -252,12 +259,10 @@ def normalise_for_comparison(value, column):
 def merge_preferred_column(df, output_column, source_columns):
     """Use the first available value in source priority order."""
     df[output_column] = pd.NA
-
     for column in source_columns:
         if column not in df.columns:
             continue
         df[output_column] = df[output_column].fillna(df[column])
-
     return df
 
 
@@ -345,22 +350,11 @@ def merge_organisations_by_priority(df):
     df["organisations"] = final_organisations
     disagreements_df = pd.DataFrame(disagreements)
 
-    print()
-    print("Organisation Summary:")
-    print("-" * 70)
-    print(
-        f"{'Sources Compared':<30}: "
-        f"{len(available_columns):,}")
-    print(
-        f"{'Records with Organisations':<30}: "
-        f"{records_with_organisations:,}")
-    print(
-        f"{'Records with Disagreements':<30}: "
-        f"{len(disagreements_df):,}")
-    print(
-        f"{'Merge Rule':<30}: "
-        f"First populated source (GtR → Scopus → WoS → OpenAlex)")
-
+    print_summary_header("Organisation Summary:")
+    print(f"{'Sources Compared':<30}: {len(available_columns):,}")
+    print(f"{'Records with Organisations':<30}: {records_with_organisations:,}")
+    print(f"{'Records with Disagreements':<30}: {len(disagreements_df):,}")
+    print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
     return df, disagreements_df
 
 
@@ -449,9 +443,7 @@ def merge_title_and_abstract(df):
     final_abstract_count = df["abstract"].notna().sum()
     final_title_count = df["title"].notna().sum()
 
-    print()
-    print("Description, Abstract and Title Summary:")
-    print("-" * 70)
+    print_summary_header("Description, Abstract and Title Summary:")
     print(f"{'Abstract from source':<35}: {source_abstract_count:,}")
     print(f"{'GtR description used as abstract':<35}: {gtr_fallback_count:,}")
     print(f"{'No abstract available':<35}: {no_abstract_count:,}")
@@ -489,17 +481,9 @@ def merge_source_title_and_journal(df, sources=None):
     if sources is None:
         sources = ["wos", "scopus"]
     # Find source title columns
-    source_title_columns = [
-        f"{source}_source_title"
-        for source in sources
-        if f"{source}_source_title" in df.columns
-    ]
+    source_title_columns = get_source_columns(df, sources, "source_title")
     # Find journal columns
-    journal_columns = [
-        f"{source}_journal"
-        for source in sources
-        if f"{source}_journal" in df.columns
-    ]
+    journal_columns = get_source_columns(df, sources, "journal")
     df["source_title"] = pd.NA
 
     # Count how many records are filled from each source.
@@ -551,7 +535,7 @@ def merge_source_title_and_journal(df, sources=None):
     df.loc[journal_fallback_mask, 
            "source_title"] = df.loc[journal_fallback_mask,"journal"]
 
-    disagreements_df = pd.DataFrame()
+    source_title_disagreements = pd.DataFrame()
     source_title_values = df["source_title"].map(
         lambda x: normalise_for_comparison(x, "source_title"))
     journal_values = df["journal"].map(
@@ -563,12 +547,12 @@ def merge_source_title_and_journal(df, sources=None):
     if disagreement.any():
         disagreement_columns = ["source_title", "journal"]
         if "global_outcome_id" in df.columns:
-            disagreements_df = df.loc[
+            source_title_disagreements = df.loc[
                 disagreement,
                 ["global_outcome_id"] + disagreement_columns
             ].copy()
         else:
-            disagreements_df = df.loc[
+            source_title_disagreements = df.loc[
                 disagreement,
                 disagreement_columns
             ].copy()
@@ -581,9 +565,7 @@ def merge_source_title_and_journal(df, sources=None):
         .ne("")
         .sum())
 
-    print()
-    print("Source Title / Journal Summary:")
-    print("-" * 70)
+    print_summary_header("Source Title / Journal Summary:")
     print(f"{'Source title columns merged':<35}: "
           f"{len(source_title_columns):,}")
     print(f"{'Journal columns merged':<35}: {len(journal_columns):,}")
@@ -600,14 +582,11 @@ def merge_source_title_and_journal(df, sources=None):
     print(f"{'Final source titles':<35}: {final_source_titles:,}")
     print(f"{'Source title disagreements':<35}: "
           f"{source_title_journal_disagreements:,}")
-    if not disagreements_df.empty:
+    if not source_title_disagreements.empty:
         disagreement_file = DISAGREEMENT_DIR / "source_title_disagreements.csv"
-        disagreements_df.to_csv(
+        source_title_disagreements.to_csv(
             disagreement_file, index=False, encoding="utf-8")
-        print(f"{'Disagreements Saved':<35}: "
-              f"{disagreement_file.name}")
-    else:
-        print(f"{'Disagreements Saved':<35}: None")
+        print(f"{'Disagreements Saved':<35}: {disagreement_file.name}")
     print(
         f"{'Merge Rule':<35}: "
         "First populated source (WoS → Scopus)")
@@ -619,33 +598,37 @@ def merge_source_title_and_journal(df, sources=None):
 
 
 def check_column_agreement(df, column, sources):
-    columns = [
-        f"{source}_{column}"
-        for source in sources
-        if f"{source}_{column}" in df.columns
-    ]
-
+    columns = get_source_columns(df, sources, column)
     comparison = df[columns].copy()
     comparison = comparison.map(
-        lambda x: normalise_for_comparison(x, column)
-    )
-
+        lambda x: normalise_for_comparison(x, column))
     values_present = comparison.notna().sum(axis=1)
     disagreement = (
         (values_present >= 2)
-        & (comparison.nunique(axis=1, dropna=True) > 1)
-    )
-
+        & (comparison.nunique(axis=1, dropna=True) > 1))
     records_with_column = comparison.notna().any(axis=1).sum()
-
-    print()
-    print(f"{column.title()} Summary:")
-    print("-" * 70)
+    print_summary_header(f"{column.title()} Summary:")
     print(f"{'Sources Compared':<30}: {len(columns):,}")
     print(f"{f'Records with {column}':<30}: {records_with_column:,}")
     print(f"{'Records with Disagreements':<30}: {disagreement.sum():,}")
-
     return comparison, disagreement
+
+def save_disagreements(disagreements, comparison, column):
+    """Save comparison rows where source values disagree."""
+    if not disagreements.any():
+        print(f"{'Disagreements Saved':<30}: None")
+        return
+    disagreement_file = DISAGREEMENT_DIR / f"{column}_disagreements.csv"
+    output = comparison.loc[disagreements].copy()
+    # Add global outcome ID if available
+    if "global_outcome_id" in comparison.columns:
+        output = output[["global_outcome_id"]
+                        + [col for col in output.columns
+                           if col != "global_outcome_id"]]
+    elif "global_outcome_id" in comparison.index.names:
+        output = output.reset_index()
+    output.to_csv(disagreement_file, index=False, encoding="utf-8")
+    print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -821,13 +804,14 @@ def fill_wos_issns_from_scopus(df):
 
         # check disagreement before filling WoS
         if wos_values:
-            is_agreement = scopus_values.issubset(wos_values)
-            if not is_agreement:
+            matching_issns = scopus_values & wos_values
+            if not matching_issns:
                 disagreement_records.append({
                     "global_outcome_id": row["global_outcome_id"],
                     "wos_issn": row["wos_issn"],
                     "wos_eissn": row["wos_eissn"],
-                    "scopus_issn": row["scopus_issn"]})
+                    "scopus_issn": row["scopus_issn"]
+                })
 
         # fill the missing WoS value when there is only one candidate
         if wos_issn and not wos_eissn:
@@ -854,9 +838,7 @@ def fill_wos_issns_from_scopus(df):
         df["wos_eissn"].fillna("").astype(str).str.strip().ne("").sum())
 
     disagreements_df = pd.DataFrame(disagreement_records)
-    print()
-    print("Scopus → WoS ISSN Summary:")
-    print("-" * 70)
+    print_summary_header("Scopus → WoS ISSN Summary:")
     print(f"{'WoS ISSNs filled':<35}: {filled_issn:,}")
     print(f"{'WoS eISSNs filled':<35}: {filled_eissn:,}")
     print(f"{'Single Scopus ISSN skipped':<35}: {skipped_single:,}")
@@ -872,12 +854,15 @@ def fill_wos_issns_from_scopus(df):
             disagreement_file, index=False, encoding="utf-8")
         print(f"{'Disagreements Saved':<35}: "
               f"{disagreement_file.name}")
-    else:
-        print(f"{'Disagreements Saved':<35}: "
-              f"None")
         
     df.drop(columns=["scopus_issn"], inplace=True, errors="ignore")
     return df
+
+def print_summary_header(title):
+    title = title.replace("_", " ").title()
+    print()
+    print(title)
+    print("-" * 70)
 
 def keyword_summary(df):
     """Report keyword coverage for source keyword columns and author keywords."""
@@ -892,9 +877,7 @@ def keyword_summary(df):
         column for column in df.columns
         if column.endswith("_author_keywords")
     ]
-    print()
-    print("Keyword Summary:")
-    print("-" * 70)
+    print_summary_header("Keyword Summary:")
     if not keyword_columns and not author_keyword_columns:
         print("No *_keywords or *_author_keywords columns found.")
         return
@@ -921,9 +904,7 @@ def keyword_summary(df):
 
     # Author keywords
     if author_keyword_columns:
-        print()
-        print("Author Keywords:")
-        print("-" * 70)
+        print_summary_header("Author Keywords:")
         for column in author_keyword_columns:
             values = df[column].fillna("").astype(str).str.strip()
             populated = values.ne("")
@@ -934,6 +915,40 @@ def keyword_summary(df):
             print(f"{column}:")
             print(f"  Rows with >=1 keyword : {populated.sum():,}")
             print(f"  Total keyword entries : {keyword_count:,}")
+
+def merge_count(df, column, sources):
+    source_columns = get_source_columns(df, sources, column)
+    if not source_columns:
+        print(f"No source columns found for {column}.")
+        return df
+    comparison, disagreements = check_column_agreement(
+        df, column, sources)
+    # Coverage by source
+    for source in sources:
+        source_column = f"{source}_{column}"
+        if source_column in df.columns:
+            present = df[source_column].notna()
+            print(f"{source.title() + ' counts':<30}: "
+                  f"{present.sum():,}")
+    # Agreement statistics
+    if len(source_columns) >= 2:
+        first = source_columns[0]
+        second = source_columns[1]
+        both_present = (
+            df[first].notna()
+            & df[second].notna())
+        agreements = (
+            both_present
+            & (df[first] == df[second]))
+        print(f"{'Both sources present':<30}: {both_present.sum():,}")
+    print(f"{'Sources agree':<30}: {agreements.sum():,}")
+    df = merge_preferred_column(df, column, source_columns)
+    print(f"{'Final counts':<30}: {df[column].notna().sum():,}")
+    print(f"{'Merge Rule':<30}: First populated source "
+          f"({' → '.join(source.title() for source in sources)})")
+    save_disagreements(disagreements, comparison, column)  
+    df.drop(columns=source_columns, inplace=True, errors="ignore")
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -1067,90 +1082,42 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         errors="ignore"
     )
 
-    # MERGE DOI
-    for column in ["doi"]:
-        comparison, disagreements = check_column_agreement(
-            outcomes, column, sources)
-
-        source_columns = [
-            f"{source}_{column}"
-            for source in SOURCE_PRIORITY
-            if f"{source}_{column}" in outcomes.columns
-        ]
-
-        outcomes = merge_preferred_column(
-            outcomes, column, source_columns)
-
-        print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
-        if disagreements.any():
-            disagreement_file = DISAGREEMENT_DIR / f"{column}_disagreements.csv"
-            comparison[disagreements].to_csv(disagreement_file, index=True, 
-                                             encoding="utf-8")
-            print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
-        else:
-            print(f"{'Disagreements Saved':<30}: None")
-
-        outcomes.drop(
-            columns=source_columns,
-            inplace=True,
-            errors="ignore"
-        )
-
-    # MERGE TITLES
+    # MERGE TITLE
     for column in ["title"]:
-        comparison, disagreements = check_column_agreement(
-            outcomes,
-            column,
-            sources
-        )
-
-        source_columns = [
-            f"{source}_{column}"
-            for source in SOURCE_PRIORITY
-            if f"{source}_{column}" in outcomes.columns
-        ]
-
-        outcomes = merge_longest_column(
-            outcomes,
-            column,
-            source_columns
-        )
-
+        title_comparison, title_disagreements = check_column_agreement(
+            outcomes, column, sources)
+        source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, column)
+        outcomes = merge_longest_column(outcomes, column, source_columns)
         print(f"{'Merge Rule':<30}: Longest non-missing {column}")
-        if disagreements.any():
-            disagreement_file = DISAGREEMENT_DIR / f"{column}_disagreements.csv"
-            comparison[disagreements].to_csv(disagreement_file, index=True, 
-                                             encoding="utf-8")
-            print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
-        else:
-            print(f"{'Disagreements Saved':<30}: None")
-
-        outcomes.drop(
-            columns=source_columns,
-            inplace=True,
-            errors="ignore"
-        )
+        save_disagreements(title_disagreements, title_comparison, column)
+        outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
     # ABSTRACT, DESCRIPTION AND TITLES MERGE
     outcomes = merge_title_and_abstract(outcomes)
 
+    # DOI MERGE
+    doi_comparison, doi_disagreements = check_column_agreement(
+        outcomes, "doi", sources)
+    source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "doi")
+    outcomes = merge_preferred_column(outcomes, "doi", source_columns)
+    print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
+    save_disagreements(doi_disagreements, doi_comparison, column)
+    outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
+
     # ORGANISATION MERGE
-    outcomes, organisation_disagreements = merge_organisations_by_priority(
-        outcomes)
-    if not organisation_disagreements.empty:
-        organisation_disagreements.to_csv(
-            DISAGREEMENT_DIR / "organisation_disagreements.csv",
-            index=False, encoding="utf-8")
-        print(f"{'Disagreements Saved':<30}: "
-              f"organisation_disagreements.csv")
-    else:
-        print(f"{'Disagreements Saved':<30}: None")
+    outcomes, org_disagreements = merge_organisations_by_priority(outcomes)
 
     # COMPARE FINAL SOURCE TITLE WITH FINAL JOURNAL
     outcomes = merge_source_title_and_journal(outcomes)
 
     # ISSN MERGE
     outcomes = fill_wos_issns_from_scopus(outcomes)
+
+    # REFERENCE COUNT MERGE
+    outcomes = merge_count(outcomes, "reference_count", ["scopus", "wos"])
+
+    # CITED BY MERGE
+    outcomes = merge_count(outcomes, "cited_by", ["scopus", "openalex"])
 
     # URL MERGE
     final_urls = []
@@ -1213,9 +1180,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     outcomes["url"] = final_urls
 
     # Report url statistics
-    print()
-    print("URL Summary:")
-    print("-" * 70)
+    print_summary_header("URL Summary:")
     print(f"{'Empty Source URLs':<30}: {empty_url_count:,}")
     print(f"{'Invalid Source URLs':<30}: {invalid_url_count:,}")
     print(f"{'URL Disagreements':<30}: {len(url_disagreements):,}")
@@ -1225,13 +1190,10 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 
     # Save url disagreements
     if url_disagreements:
-        url_disagreements_df = pd.DataFrame(url_disagreements)
-        url_disagreements_df.to_csv(
-            DISAGREEMENT_DIR / "url_disagreements.csv",
-            index=False, encoding="utf-8")
-        print(f"{'Disagreements Saved':<30}: url_disagreements.csv")
-    else:
-        print("No URL disagreements found.")
+        disagreement_file = DISAGREEMENT_DIR / "url_disagreements.csv"
+        pd.DataFrame(url_disagreements).to_csv(
+            disagreement_file, index=False, encoding="utf-8")
+        print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
 
     # Remove source url columns
     source_url_columns = [
@@ -1329,8 +1291,7 @@ def main():
     print(f"Columns        : {len(project_df.columns)}")
     print(f"Saved          : {project_output_file.name}")
 
-    print("\nOpenAlex-GtR Project Comparison Summary:")
-    print("-" * 70)
+    print_summary_header("OpenAlex-GtR Project Comparison Summary:")
     summary_labels = {
         "openalex_description_longer": "OpenAlex Longer Description",
         "description_difference": "Description Difference",
@@ -1343,9 +1304,7 @@ def main():
         if col in comparison_df.columns:
             print(f"{label:<30}: {comparison_df[col].sum()}")
 
-    print()
-    print("Date Summary:")
-    print("-" * 70)
+    print_summary_header("Date Summary:")
     for date_label, column in [
         ("Start Date", "start_date_difference_days"),
         ("End Date", "end_date_difference_days")]:
