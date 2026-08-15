@@ -580,6 +580,7 @@ def merge_organisations_by_priority(df):
     print(f"{'Records with Organisations':<30}: {records_with_organisations:,}")
     print(f"{'Records with Disagreements':<30}: {len(disagreements_df):,}")
     print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
+    df.drop(columns=available_columns, inplace=True, errors="ignore")
     return df, disagreements_df
 
 
