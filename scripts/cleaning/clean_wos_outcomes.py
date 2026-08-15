@@ -147,23 +147,33 @@ def make_doi_url(doi):
 
 def clean_issn(value):
     """
-    Removes hyphens within individual ISSNs and separates multiple
-    ISSNs with '; '.
+    Clean ISSN/EISSN values.
+    Ensure 8 characters, hyphen is present 
+    and returns multiples separated by ";"
     """
     if pd.isna(value):
         return pd.NA
-    value = str(value).strip()
+    value = str(value).strip().upper()
     if not value:
         return pd.NA
-    # Find ISSNs in either 12345678 or 1234-5678 format.
-    issns = re.findall(r"\b\d{4}-?\d{3}[\dXx]\b", value)
-    if not issns:
-        return value
-    cleaned = [issn.replace("-", "").upper()
-               for issn in issns]
-    # Remove duplicates while preserving order.
+    # Find possible ISSNs, with or without a hyphen.
+    matches = re.findall(r'(?<!\d)\d{4}-?\d{3}[0-9X](?!\d)',
+                         value)
+    if not matches:
+        return pd.NA
+    cleaned = []
+    for issn in matches:
+        # Remove existing hyphen
+        issn = issn.replace("-", "")
+        # Must be exactly 8 characters
+        if len(issn) != 8:
+            continue
+        # Reinsert the hyphen
+        issn = f"{issn[:4]}-{issn[4:]}"
+        cleaned.append(issn)
+    # Remove duplicates while preserving order
     cleaned = list(dict.fromkeys(cleaned))
-    return "; ".join(cleaned)
+    return "; ".join(cleaned) if cleaned else pd.NA
 
 
 def clean_df(df):
