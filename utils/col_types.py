@@ -113,7 +113,6 @@ OUTCOME_COLUMN_TYPES = {
     # Numeric
     "amount": "float64",
     "cited_by": "Int64",
-    "datePublished": "Int64",
     "end": "Int64",
     "fwci": "float64",
     "n_addresses": "Int64",
@@ -171,5 +170,6 @@ def read_csv(path, col_types=OUTCOME_COLUMN_TYPES):
     # Build dtypes for columns actually present
     dtypes = get_dtypes(cols, col_types)
     # Read the  data
-    df = pd.read_csv(path, encoding="utf-8", dtype=dtypes)
+    df = pd.read_csv(path, encoding="utf-8", 
+                     dtype=dtypes, low_memory=False)
     return df

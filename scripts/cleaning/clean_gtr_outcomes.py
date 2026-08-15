@@ -122,65 +122,101 @@ def clean_year(value):
 
 def merge_date(df):
     """
-    Merge all year/date fields into a single string 'year' column while
-    preserving publication date separately.
-    """
-    df["year"] = pd.Series(pd.NA, index=df.index, dtype="string")
-    # Preserve publication date separately
-    if "datePublished" in df.columns:
-        df["date_published"] = df["datePublished"]
+    Create a common 'year' column from available date/year fields.
 
+    datePublished is renamed to publication_date and retained.
+    Other source date/year fields are removed afterwards.
+    """
+
+    df["year"] = pd.Series(pd.NA, index=df.index, dtype="string")
+
+    # Rename datePublished -> publication_date
+    if "datePublished" in df.columns:
+        df = df.rename(columns={"datePublished": "publication_date"})
+
+    # Explicitly convert publication_date to datetime
+    if "publication_date" in df.columns:
+        df["publication_date"] = pd.to_datetime(
+            df["publication_date"],
+            errors="coerce"
+        )
+
+        # Use publication date as first priority for year
+        df["year"] = (
+            df["publication_date"]
+            .dt.year
+            .astype("Int64")
+            .astype("string")
+        )
+
+    # Other year fields are fallbacks
     year_columns = [
-        "datePublished",
         "yearFirstProvided",
         "yearsOfDissemination",
         "yearEstablished",
         "yearDevelopmentCompleted",
         "yearProtectionGranted"
     ]
+
     for col in year_columns:
         if col not in df.columns:
             continue
-        if col == "datePublished":
-            df["year"] = df["year"].fillna(
-                df[col].dt.year.astype("Int64").astype("string"))
-        elif col == "yearsOfDissemination":
-            df["year"] = df["year"].fillna(
+
+        if col == "yearsOfDissemination":
+            values = (
                 df[col]
                 .astype("string")
                 .str.replace(r"\s*,\s*", "; ", regex=True)
-                .str.replace(r"\.0$", "", regex=True))
+                .str.replace(r"\.0$", "", regex=True)
+            )
         else:
-            df["year"] = df["year"].fillna(
-                df[col].apply(clean_year).astype("string"))
+            values = df[col].apply(clean_year).astype("string")
 
-    # If start/end dates are provided, use their years
+        df["year"] = df["year"].fillna(values)
+
+    # Use start/end dates as further fallbacks
     if "start" in df.columns:
         df["start"] = pd.to_datetime(df["start"], errors="coerce")
         start_year = df["start"].dt.year
+
         if "end" in df.columns:
             df["end"] = pd.to_datetime(df["end"], errors="coerce")
             end_year = df["end"].dt.year
+
             missing_year = df["year"].isna()
+
             for idx in df.index[missing_year]:
                 start = start_year.loc[idx]
                 end = end_year.loc[idx]
+
                 if pd.notna(start):
                     if pd.notna(end) and end >= start:
                         df.loc[idx, "year"] = "; ".join(
-                            str(year) for year in range(int(start), int(end) + 1))
+                            str(year)
+                            for year in range(int(start), int(end) + 1)
+                        )
                     else:
                         df.loc[idx, "year"] = str(int(start))
+
         else:
             df["year"] = df["year"].fillna(
-                start_year.astype("Int64").astype("string"))
+                start_year.astype("Int64").astype("string")
+            )
 
-    # Remove source date/year fields
+    # Remove source year/date fields
     df = df.drop(
-        columns=year_columns + ["start", "end"],
+        columns=[
+            "yearFirstProvided",
+            "yearsOfDissemination",
+            "yearEstablished",
+            "yearDevelopmentCompleted",
+            "yearProtectionGranted",
+            "start",
+            "end",
+        ],
         errors="ignore"
     )
-    # Final guarantee that year is string
+
     df["year"] = df["year"].astype("string")
 
     return df
@@ -379,7 +415,7 @@ def publications(df, outcome_type):
     df = rename_columns(df, {"abstractText": "abstract",
                              "otherInformation": "other_info",
                              "journalTitle": "journal_title",
-                             "datePublished": "date_published",
+                             "datePublished": "publication_date",
                              "publicationUrl": "url",
                              "pubMedId": "pubmed_id",
                              "seriesNumber": "series_num",
@@ -398,7 +434,7 @@ def publications(df, outcome_type):
     df = clean_issn(df)
     df["author_clean"] = df["author"].apply(normalise_name)
     df = convert_to_numeric(df, "total_pages")
-    df = convert_to_date(df, "date_published")
+    df = convert_to_date(df, "publication_date")
     df = convert_to_category(df, "type", "journal_title")
     df = clean_text_columns(df, "abstract", "other_info", "series_title",
                             "sub_title", "volume_title", "chapter_title")
@@ -480,7 +516,6 @@ def spinouts(df, outcome_type):
 def all_outcomes(df, outcome_type):
     df = clean_df(df)
     df = clean_doi_and_url(df)
-    df = convert_to_date(df, "datePublished", "start", "end")
     df = merge_date(df)
     df["type"] = df["type"].fillna(df["form"])
     df["organisations"] = (df[["parentOrganisation", "childOrganisation"]]
@@ -492,6 +527,7 @@ def all_outcomes(df, outcome_type):
     df = clean_text_columns(df)
     if "year" in df.columns:
         df["year"] = df["year"].apply(clean_year).astype("string")
+    df = convert_to_date(df, "publication_date")
     df = convert_to_string(df, "author", "organisations")
     return df
 
