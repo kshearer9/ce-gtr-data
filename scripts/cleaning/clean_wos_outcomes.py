@@ -95,7 +95,9 @@ CATEGORY_COLUMNS = [
 COLS_TO_DROP = ["funding_agencies",
                 "funding_grant_ids",
                 "funding_text",
-                "n_addresses"]
+                "n_addresses",
+                "early_access_year",
+                "open_access_gold"]
 
 
 # ---------------------------------------------------------------------------
