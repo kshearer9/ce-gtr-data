@@ -76,6 +76,36 @@ done
 
 coverage "AFTER"
 
+# --- author enrichment ------------------------------------------------------
+# Builds an author-level table alongside the outcome-level cleaned files.
+#
+# It is a separate table because authors cannot live inside an outcome row: the
+# cleaned files hold them as one semicolon-joined string, and a delimited
+# string cannot carry a per-author ORCID or forename. That is precisely what
+# made the Web of Science ORCIDs unusable.
+#
+# Both steps read the API caches in cache/, so they make no network calls and
+# consume no API quota. Nothing in scripts/cleaning/ is modified. The output
+# carries the same outcome_id the cleaners produce, so it joins directly onto
+# the cleaned outcome files and onto data/cleaned/merged/project_outcome_map.csv.
+#
+#   harvest_author_identifiers -> data/cleaned/authors/authors_long.csv
+#                                 data/cleaned/authors/author_identities.csv
+#   standardise_author_names   -> data/cleaned/authors/authors_standardised.csv
+#                                 data/cleaned/authors/authors_standardised_excel.csv
+#
+# Allowed to fail without stopping the run: a missing cache must not cost you
+# the cleaned outcome files produced above.
+for step in \
+    "harvesting author identifiers:scripts.enrichment.harvest_author_identifiers" \
+    "standardising author names:scripts.enrichment.standardise_author_names"
+do
+    name="${step%%:*}"; mod="${step#*:}"
+    echo
+    echo "--- $name ---"
+    $PY -m "$mod" || echo "  WARNING: $name failed"
+done
+
 echo
 echo "=== $(date) : outputs run finished ==="
 echo "Full log in $LOG"
