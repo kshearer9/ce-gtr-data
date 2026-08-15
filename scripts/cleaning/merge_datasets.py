@@ -596,17 +596,68 @@ def merge_source_title_and_journal(df, sources=None):
         inplace=True, errors="ignore")
     return df
 
+def merge_majority_column(df, column, sources):
+    source_columns = get_source_columns(df, sources, column)
+    if not source_columns:
+        print(f"No source columns found for {column}.")
+        return df
+    final_values = []
+    selected_sources = []
+    for _, row in df.iterrows():
+        # Get available values in source priority order
+        values = {
+            source: row[f"{source}_{column}"]
+            for source in sources
+            if f"{source}_{column}" in df.columns
+            and pd.notna(row[f"{source}_{column}"])}
+        if not values:
+            final_values.append(pd.NA)
+            selected_sources.append(None)
+            continue
+        # Count how many sources report each value
+        value_counts = pd.Series(values.values()).value_counts()
+        # Check for a majority
+        majority_values = value_counts[
+            value_counts > len(values) / 2]
+        if not majority_values.empty:
+            # Majority value wins
+            selected_value = majority_values.index[0]
+            # Find which priority source supplied that value
+            selected_source = next(
+                source
+                for source in sources
+                if source in values
+                and values[source] == selected_value)
+        else:
+            # No majority: use source priority
+            selected_source = next(iter(values))
+            selected_value = values[selected_source]
+        final_values.append(selected_value)
+        selected_sources.append(selected_source)
+    df[column] = final_values
+    # Report which source supplied the final value
+    for source in sources:
+        count = sum(
+            selected_source == source
+            for selected_source in selected_sources)
+        print(f"{source.title() + ' selected':<30}: "
+              f"{count:,}")
+    return df
+
 
 def check_column_agreement(df, column, sources):
     columns = get_source_columns(df, sources, column)
-    comparison = df[columns].copy()
-    comparison = comparison.map(
+    comparison = columns.copy()
+    if "global_outcome_id" in df.columns:
+        comparison_columns = ["global_outcome_id"] + columns
+    comparison = df[comparison_columns].copy()
+    source_comparison = comparison[columns].map(
         lambda x: normalise_for_comparison(x, column))
-    values_present = comparison.notna().sum(axis=1)
+    values_present = source_comparison.notna().sum(axis=1)
     disagreement = (
         (values_present >= 2)
-        & (comparison.nunique(axis=1, dropna=True) > 1))
-    records_with_column = comparison.notna().any(axis=1).sum()
+        & (source_comparison.nunique(axis=1, dropna=True) > 1))
+    records_with_column = source_comparison.notna().any(axis=1).sum()
     print_summary_header(f"{column.title()} Summary:")
     print(f"{'Sources Compared':<30}: {len(columns):,}")
     print(f"{f'Records with {column}':<30}: {records_with_column:,}")
@@ -930,25 +981,52 @@ def merge_count(df, column, sources):
             present = df[source_column].notna()
             print(f"{source.title() + ' counts':<30}: "
                   f"{present.sum():,}")
-    # Agreement statistics
+    # Difference statistics
     if len(source_columns) >= 2:
         first = source_columns[0]
         second = source_columns[1]
         both_present = (
             df[first].notna()
             & df[second].notna())
-        agreements = (
-            both_present
-            & (df[first] == df[second]))
+        difference = (df[first] - df[second]).abs()
+        exact_match = (both_present & (difference == 0))
+        less_than_3 = (both_present & (difference > 0)
+                       & (difference < 3))
+        three_or_more = (both_present & (difference >= 3))
         print(f"{'Both sources present':<30}: {both_present.sum():,}")
-    print(f"{'Sources agree':<30}: {agreements.sum():,}")
+        print(f"{'Exact match':<30}: {exact_match.sum():,}")
+        print(f"{'Less than 3 difference':<30}: {less_than_3.sum():,}")
+        print(f"{'3+ difference':<30}: {three_or_more.sum():,}")
     df = merge_preferred_column(df, column, source_columns)
-    print(f"{'Final counts':<30}: {df[column].notna().sum():,}")
     print(f"{'Merge Rule':<30}: First populated source "
           f"({' → '.join(source.title() for source in sources)})")
     save_disagreements(disagreements, comparison, column)  
     df.drop(columns=source_columns, inplace=True, errors="ignore")
     return df
+
+def get_source_priority_by_outliers(df, column, sources):
+    source_columns = get_source_columns(df, sources, column)
+    outlier_counts = {source: 0 for source in sources}
+    for _, row in df[source_columns].iterrows():
+        present = row.dropna()
+        if len(present) < 3:
+            continue
+        counts = present.value_counts()
+        # One source differs while the others agree
+        if len(counts) == 2 and counts.iloc[-1] == 1:
+            outlier_column = present[
+                present == counts.index[-1]
+            ].index[0]
+            source = outlier_column.removesuffix(f"_{column}")
+            if source in outlier_counts:
+                outlier_counts[source] += 1
+    priority = sorted(sources,
+                      key=lambda source: outlier_counts[source])
+    for source in priority:
+        print(f"  {source.title() + ' outlier':<28}: "
+              f"{outlier_counts[source]:,}")
+    return priority
+
 
 
 # ---------------------------------------------------------------------------
@@ -1095,13 +1173,36 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     # ABSTRACT, DESCRIPTION AND TITLES MERGE
     outcomes = merge_title_and_abstract(outcomes)
 
+    # YEAR MERGE
+    year_comparison, year_disagreements = check_column_agreement(
+        outcomes, "year", SOURCE_PRIORITY)
+    year_priority = get_source_priority_by_outliers(outcomes, "year", SOURCE_PRIORITY)
+    source_columns = get_source_columns(outcomes, year_priority, "year")
+    outcomes = merge_majority_column(outcomes, "year", year_priority)
+    print(f"{'Merge Rule':<30}: First populated source "
+          f"({' → '.join(source.title() for source in year_priority)})")
+    save_disagreements(year_disagreements, year_comparison, "year")
+    outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
+
+    # PUBLICATION DATE MERGE
+    date_comparison, date_disagreements = check_column_agreement(
+        outcomes, "publication_date", SOURCE_PRIORITY)
+    date_priority = get_source_priority_by_outliers(outcomes, 
+                                                    "publication_date", SOURCE_PRIORITY)
+    source_columns = get_source_columns(outcomes, date_priority, "publication_date")
+    outcomes = merge_majority_column(outcomes, "publication_date", date_priority)
+    print(f"{'Merge Rule':<30}: First populated source "
+          f"({' → '.join(source.title() for source in date_priority)})")
+    save_disagreements(date_disagreements, date_comparison, "year")
+    outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
+
     # DOI MERGE
     doi_comparison, doi_disagreements = check_column_agreement(
         outcomes, "doi", sources)
     source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "doi")
     outcomes = merge_preferred_column(outcomes, "doi", source_columns)
     print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
-    save_disagreements(doi_disagreements, doi_comparison, column)
+    save_disagreements(doi_disagreements, doi_comparison, "doi")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
     # ORGANISATION MERGE
