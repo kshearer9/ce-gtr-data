@@ -9,13 +9,10 @@ import requests
 # FILE SETUP
 # ---------------------------------------------------------------------------
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-
-OUTCOME_INPUT_DIR = ROOT_DIR / "data" / "cleaned" / "outcomes"
-PROC_DIR = ROOT_DIR / "data" / "processed"
-PROC_DIR.mkdir(parents=True, exist_ok=True)
-
-VALIDATION_FILE = PROC_DIR / "unique_url_validation.csv"
+from utils.merge_config import (
+    OUTCOME_INPUT_DIR,
+    PROC_DIR,
+)
 
 SOURCE_FILES = {
     "gtr": "gtr_all_outcomes_clean.csv",
@@ -23,6 +20,8 @@ SOURCE_FILES = {
     "wos": "wos_all_outcomes_clean.csv",
     "openalex": "openalex_all_outcomes_clean.csv",
 }
+
+URL_VALIDATION_FILE = PROC_DIR / "unique_url_validation.csv"
 
 # ---------------------------------------------------------------------------
 # SETTINGS
@@ -178,11 +177,11 @@ def load_source_data():
 
 def load_previous_url_validation():
     """Load the existing URL validation cache."""
-    if not VALIDATION_FILE.exists():
+    if not URL_VALIDATION_FILE.exists():
         return {}
 
     previous = pd.read_csv(
-        VALIDATION_FILE,
+        URL_VALIDATION_FILE,
         encoding="utf-8",
         dtype=str,
     )
@@ -245,10 +244,9 @@ def validate_unique_urls(unique_urls, previous_results):
         else:
             urls_to_validate.append(url)
 
-    print()
-    print("=" * 70)
-    print("URL VALIDATION")
-    print("=" * 70)
+    print("-" * 70)
+    print("RUNNING URL VALIDATION")
+    print("-" * 70)
     print(f"Total unique URLs          : {len(unique_urls):,}")
     print(f"Previously validated       : {reused_count:,}")
     print(f"New URLs to validate       : {len(urls_to_validate):,}")
@@ -311,7 +309,7 @@ def save_validation_results(results):
         validation_df = validation_df.sort_values("url_original").reset_index(drop=True)
 
     validation_df.to_csv(
-        VALIDATION_FILE,
+        URL_VALIDATION_FILE,
         index=False,
         encoding="utf-8",
     )
@@ -323,14 +321,14 @@ def save_validation_results(results):
 # MAIN
 # ---------------------------------------------------------------------------
 
-def main():
+def main(refresh=False):
     unique_urls = load_source_data()
-    previous_results = load_previous_url_validation()
-
+    if refresh:
+        previous_results = {}
+    else:
+        previous_results = load_previous_url_validation()
     validation_results = validate_unique_urls(
-        unique_urls,
-        previous_results,
-    )
+        unique_urls, previous_results)
 
     validation_df = save_validation_results(validation_results)
 
@@ -338,14 +336,14 @@ def main():
     invalid_count = validation_df["classification"].eq("invalid").sum()
 
     print()
-    print("=" * 70)
+    print("-" * 70)
     print("URL VALIDATION COMPLETE")
-    print("=" * 70)
+    print("-" * 70)
     print(f"Unique URLs              : {len(validation_df):,}")
     print(f"Valid                    : {valid_count:,}")
     print(f"Invalid                  : {invalid_count:,}")
     print()
-    print(f"Saved validation cache:\n{VALIDATION_FILE}")
+    print(f"Saved validation cache:\n{URL_VALIDATION_FILE}")
 
 
 if __name__ == "__main__":
