@@ -241,3 +241,65 @@ coding rather than assumed. The analysis is therefore built from predicted
 probability distributions rather than from hard labels, an approach validated at
 0.73 percentage points mean absolute error per field against 1.51 for hard
 assignment. `scripts/classification/README.md` sets out the evidence.
+
+### 19. Recover author identifiers and standardise author names
+
+Recovers the ORCID and author identifiers the collectors fetched and then
+discarded, and renders every author name in one consistent format. Reads the
+existing SQLite caches, so there are no API calls, no credentials and nothing
+is re-collected. Run `harvest` first.
+
+```bash
+python3 -m scripts.enrichment.harvest_author_identifiers
+python3 -m scripts.enrichment.standardise_author_names
+```
+
+Produces `authors_long.csv` (one row per author position on an outcome),
+`author_identities.csv` (one row per identity, with ORCID and observed name
+variants) and `authors_standardised.csv`, all in `data/cleaned/authors/`.
+
+Name standardisation is formatting only. It never merges two records or infers
+that "Ji, S." and "Ji, Shouxun" are the same person, because leaving one
+researcher as two entries is untidy but true, whereas merging two people
+publishes a false claim about them.
+
+### 20. Build the institution registry
+
+Resolves every organisation name across GtR, OpenAlex, Scopus and WoS to one
+row per real organisation, attaches an organisation type, and re-expresses the
+project-organisation relationship in long form. This is what stops "The
+University of Manchester" and "UNIVERSITY OF MANCHESTER" being counted as two
+institutions.
+
+```bash
+python3 -m scripts.enrichment.build_institution_registry --ror
+```
+
+The first run resolves around 7,400 organisations against the Research
+Organization Registry and takes roughly an hour. Results cache to
+`data/cache/ror_lookup.json`, so later runs take seconds and the `--ror` flag
+costs nothing. Omitting it builds everything except the ROR identifiers and
+needs no network access.
+
+Produces, in `data/cleaned/institutions/`:
+
+| File | Contents |
+|---|---|
+| `institutions.csv` | one row per organisation: canonical name, type, ROR id, country, city, every observed spelling |
+| `institution_name_variants.csv` | each observed surface string mapped to its organisation |
+| `project_institutions.csv` | long form, one row per project-organisation pair, carrying the role (lead or participant) |
+| `institution_match_report.txt` | match rates by type, and every merge listed so it can be checked by eye |
+| `institutions_for_review.csv` | organisations the rules could not resolve, for manual adjudication |
+
+**Use `institutions.csv` and `project_institutions.csv` for any
+institution-level counting, not the raw `lead_organisation` string**, which
+double-counts.
+
+ROR matches are tiered rather than trusted: accepted automatically above 0.90
+where ROR sets its own confidence flag, held for manual review between 0.70 and
+0.90, and rejected below. A match to a non-UK organisation is also held for
+review, because six UK councils all matched an American nonprofit at
+auto-accept confidence. Manual decisions live in
+`institution_type_overrides.csv`, which is committed despite the `data/` ignore
+rule because it is a hand-authored input rather than a generated output. The
+script reads it but never writes it, so re-running cannot destroy the coding.
