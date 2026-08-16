@@ -76,6 +76,12 @@ GTR_TYPE_MAP = {
     "products with applications outside of medicine": ("product", "non_medical_product"),
     "therapeutic intervention - medical devices": ("product", "medical_device"),
     "therapeutic intervention - vaccines": ("product", "vaccine"),
+
+    # Extra GtR overarching categories
+    "furtherfundings": ("further_funding", "further_funding"),
+    "collaborations": ("collaboration", "collaboration"),
+    "intellectualproperties": ("intellectual_property", "intellectual_property"),
+    "spinouts": ("spinout", "spinout")
 }
 
 SCOPUS_TYPE_MAP = {

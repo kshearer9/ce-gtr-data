@@ -223,10 +223,7 @@ def compare_projects(gtr_df, openalex_df):
     else:
         disagreements["description"] = pd.DataFrame()
 
-    # ---------------------------------------------------------------
-    # FUNDING
-    # ---------------------------------------------------------------
-
+    # Funding
     funding_records = []
 
     gtr_funding = merged.get("value_gbp_gtr")
@@ -240,8 +237,8 @@ def compare_projects(gtr_df, openalex_df):
 
         difference = (oa_funding - gtr_funding).abs()
         exact = both_present & difference.eq(0)
-        small = both_present & (difference > 0) & (difference <= 100)
-        medium = both_present & (difference > 100) & (difference <= 1000)
+        small = both_present & (difference > 0) & (difference <= 1)
+        medium = both_present & (difference > 1) & (difference <= 1000)
         large = both_present & (difference > 1000)
 
         for index in merged.index[both_present & ~exact]:
@@ -260,8 +257,8 @@ def compare_projects(gtr_df, openalex_df):
         print(f"{'GtR populated':<35}: {gtr_funding.notna().sum():,}")
         print(f"{'OpenAlex populated':<35}: {oa_funding.notna().sum():,}")
         print(f"{'Exact agreement':<35}: {exact.sum():,}")
-        print(f"{'Difference ≤ £100':<35}: {small.sum():,}")
-        print(f"{'Difference £100–£1,000':<35}: {medium.sum():,}")
+        print(f"{'Difference ≤ £1':<35}: {small.sum():,}")
+        print(f"{'Difference £1–£1,000':<35}: {medium.sum():,}")
         print(f"{'Difference > £1,000':<35}: {large.sum():,}")
 
         openalex_higher = both_present & (oa_funding > gtr_funding)
@@ -275,10 +272,7 @@ def compare_projects(gtr_df, openalex_df):
     else:
         disagreements["funding"] = pd.DataFrame()
 
-    # ---------------------------------------------------------------
-    # FUNDING TYPE
-    # ---------------------------------------------------------------
-
+    # Funding type
     funding_type_records = []
 
     if (
@@ -340,10 +334,7 @@ def compare_projects(gtr_df, openalex_df):
     else:
         disagreements["funding_type"] = pd.DataFrame()
 
-    # ---------------------------------------------------------------
     # DATES
-    # ---------------------------------------------------------------
-
     for column in ["start_date", "end_date"]:
 
         gtr_column = f"{column}_gtr"
@@ -576,10 +567,10 @@ def merge_organisations_by_priority(df):
     disagreements_df = pd.DataFrame(disagreements)
 
     print_summary_header("Organisation Summary:")
-    print(f"{'Sources Compared':<30}: {len(available_columns):,}")
-    print(f"{'Records with Organisations':<30}: {records_with_organisations:,}")
-    print(f"{'Records with Disagreements':<30}: {len(disagreements_df):,}")
-    print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
+    print(f"{'Sources Compared':<35}: {len(available_columns):,}")
+    print(f"{'Records with Organisations':<35}: {records_with_organisations:,}")
+    print(f"{'Records with Disagreements':<35}: {len(disagreements_df):,}")
+    print(f"{'Merge Rule':<35}: First populated source (GtR → Scopus → WoS → OpenAlex)")
     df.drop(columns=available_columns, inplace=True, errors="ignore")
     return df, disagreements_df
 
@@ -866,7 +857,7 @@ def merge_majority_column(df, column, sources):
         count = sum(
             selected_source == source
             for selected_source in selected_sources)
-        print(f"{source.title() + ' selected':<30}: "
+        print(f"{source.title() + ' selected':<35}: "
               f"{count:,}")
     return df
 
@@ -977,10 +968,62 @@ def merge_outcome_types(df, sources=None):
 
     df["type"] = final_types
     df["subtype"] = final_subtypes
+
+    # Final GtR fallback for records with no type/subtype
+    fallback_unmapped_values = {}
+    if "gtr_gtr_outcome_type" in df.columns:
+
+        fallback_count = 0
+        fallback_unmapped_count = 0
+        fallback_missing_count = 0
+
+        for index, row in df.iterrows():
+
+            current_type = row["type"]
+            current_subtype = row["subtype"]
+
+            type_missing = (
+                pd.isna(current_type)
+                or not str(current_type).strip()
+                or str(current_type).strip().lower() == "other"
+            )
+
+            subtype_missing = (
+                pd.isna(current_subtype)
+                or not str(current_subtype).strip()
+                or str(current_subtype).strip().lower() == "other"
+            )
+
+            # Only fallback when BOTH are missing/useless
+            if not (type_missing and subtype_missing):
+                continue
+
+            gtr_value = row["gtr_gtr_outcome_type"]
+
+            if pd.isna(gtr_value) or not str(gtr_value).strip():
+                fallback_missing_count += 1
+                continue
+
+            gtr_value = str(gtr_value).strip().lower()
+
+            if gtr_value not in GTR_TYPE_MAP:
+                fallback_unmapped_count += 1
+                fallback_unmapped_values[gtr_value] = (
+                    fallback_unmapped_values.get(gtr_value, 0) + 1
+                )
+                continue
+
+            mapped_type, mapped_subtype = GTR_TYPE_MAP[gtr_value]
+
+            # Only replace other/other with a useful GtR mapping
+            if mapped_type != "other" or mapped_subtype != "other":
+                df.at[index, "type"] = mapped_type
+                df.at[index, "subtype"] = mapped_subtype
+                fallback_count += 1
     return df
 
 
-def check_column_agreement(df, column, sources):
+def check_column_agreement(df, column, sources, fallback_columns = None):
     columns = get_source_columns(df, sources, column)
     if not columns:
         print_summary_header(f"{column.title()} Summary:")
@@ -998,17 +1041,41 @@ def check_column_agreement(df, column, sources):
     disagreement = (
         (values_present >= 2)
         & (source_comparison.nunique(axis=1, dropna=True) > 1))
-    records_with_column = source_comparison.notna().any(axis=1).sum()
+
+    # Records with a value in the normal source columns
+    records_with_column = source_comparison.notna().any(axis=1)
+
+    # Include fallback columns in coverage count
+    fallback_present = pd.Series(False, index=df.index)
+    if fallback_columns:
+        for fallback_column in fallback_columns:
+            if fallback_column not in df.columns:
+                continue
+            fallback_values = df[fallback_column].map(
+                lambda x: normalise_for_comparison(x, column))
+            fallback_present |= fallback_values.notna()
+    records_with_column_or_fallback = (
+        records_with_column | fallback_present)
+
+    # Summary
     print_summary_header(f"{column.title()} Summary:")
-    print(f"{'Sources Compared':<30}: {len(columns):,}")
-    print(f"{f'Records with {column}':<30}: {records_with_column:,}")
-    print(f"{'Records with Disagreements':<30}: {disagreement.sum():,}")
+    print(f"{'Sources Compared':<35}: {len(columns):,}")
+    print(f"{f'Records with {column}':<35}: {records_with_column.sum():,}")
+    if fallback_columns:
+        print(f"{f'Records with {column} after fallback':<35}: "
+              f"{records_with_column_or_fallback.sum():,}")
+        for fallback_column in fallback_columns:
+            if fallback_column in df.columns:
+                fallback_values = df[fallback_column].map(
+                    lambda x: normalise_for_comparison(x, column))
+    print(f"{'Records with Disagreements':<35}: {disagreement.sum():,}")
     return comparison, disagreement
+
 
 def save_disagreements(disagreements, comparison, column, dataset):
     """Save comparison rows where source values disagree."""
     if not disagreements.any():
-        print(f"{'Disagreements Saved':<30}: None")
+        print(f"{'Disagreements Saved':<35}: None")
         return
     if dataset == "projects":
         disagreement_dir = PROJECT_DISAGREEMENT_DIR
@@ -1028,7 +1095,7 @@ def save_disagreements(disagreements, comparison, column, dataset):
     elif "global_outcome_id" in comparison.index.names:
         output = output.reset_index()
     output.to_csv(disagreement_file, index=False, encoding="utf-8")
-    print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
+    print(f"{'Disagreements Saved':<35}: {disagreement_file.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -1328,7 +1395,7 @@ def merge_count(df, column, sources):
         source_column = f"{source}_{column}"
         if source_column in df.columns:
             present = df[source_column].notna()
-            print(f"{source.title() + ' counts':<30}: "
+            print(f"{source.title() + ' counts':<35}: "
                   f"{present.sum():,}")
     # Difference statistics
     if len(source_columns) >= 2:
@@ -1342,12 +1409,12 @@ def merge_count(df, column, sources):
         less_than_3 = (both_present & (difference > 0)
                        & (difference < 3))
         three_or_more = (both_present & (difference >= 3))
-        print(f"{'Both sources present':<30}: {both_present.sum():,}")
-        print(f"{'Exact match':<30}: {exact_match.sum():,}")
-        print(f"{'Less than 3 difference':<30}: {less_than_3.sum():,}")
-        print(f"{'3+ difference':<30}: {three_or_more.sum():,}")
+        print(f"{'Both sources present':<35}: {both_present.sum():,}")
+        print(f"{'Exact match':<35}: {exact_match.sum():,}")
+        print(f"{'Less than 3 difference':<35}: {less_than_3.sum():,}")
+        print(f"{'3+ difference':<35}: {three_or_more.sum():,}")
     df = merge_preferred_column(df, column, source_columns)
-    print(f"{'Merge Rule':<30}: First populated source "
+    print(f"{'Merge Rule':<35}: First populated source "
           f"({' → '.join(source.title() for source in sources)})")
     save_disagreements(disagreements, comparison, column, "outcomes")  
     df.drop(columns=source_columns, inplace=True, errors="ignore")
@@ -1372,7 +1439,7 @@ def get_source_priority_by_outliers(df, column, sources):
     priority = sorted(sources,
                       key=lambda source: outlier_counts[source])
     for source in priority:
-        print(f"  {source.title() + ' outlier':<28}: "
+        print(f"  {source.title() + ' outlier':<33}: "
               f"{outlier_counts[source]:,}")
     return priority
 
@@ -1465,35 +1532,6 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         errors="ignore"
     )
 
-    cols_to_remove = [
-        "project_id",
-        "project_title",
-        "project_acronym",
-        "project_start_date",
-        "project_end_date",
-        "grant_category",
-        "funding_type",
-        "grant_reference",
-        "project_openalex_url",
-        "source_id",
-        "publisher",
-        "n_addresses",
-        "funding_agencies",
-        "funding_grant_ids",
-        "gtr_outcome_type"
-    ]
-
-    source_columns_to_remove = [
-        f"{source}_{column}"
-        for source in sources
-        for column in cols_to_remove
-    ]
-    outcomes.drop(
-        columns=source_columns_to_remove,
-        inplace=True,
-        errors="ignore"
-    )
-
     # Replace original columns with cleaned versions
     clean_columns = [
         col for col in outcomes.columns
@@ -1516,7 +1554,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
             outcomes, column, sources)
         source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, column)
         outcomes = merge_longest_column(outcomes, column, source_columns)
-        print(f"{'Merge Rule':<30}: Longest non-missing {column}")
+        print(f"{'Merge Rule':<35}: Longest non-missing {column}")
         save_disagreements(title_disagreements, title_comparison, column, "outcomes")
         outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
@@ -1529,10 +1567,10 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     # Type
     type_source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "type")
     type_comparison, type_disagreements = check_column_agreement(
-        outcomes, "type", SOURCE_PRIORITY)
+        outcomes, "type", SOURCE_PRIORITY, fallback_columns=["gtr_gtr_outcome_type"])
     save_disagreements(type_disagreements, type_comparison, "type", "outcomes")
     outcomes.drop(columns=type_source_columns, inplace=True, errors="ignore")
-    print(f"{'Merge Rule':<30}: "
+    print(f"{'Merge Rule':<35}: "
           "Majority vote among useful types; "
           "source priority used as fallback; "
           "('other', 'other') used only when no useful type exists")
@@ -1540,11 +1578,11 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     # Subtype
     subtype_source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "subtype")
     subtype_comparison, subtype_disagreements = check_column_agreement(
-        outcomes, "subtype", SOURCE_PRIORITY)
+        outcomes, "subtype", SOURCE_PRIORITY, fallback_columns=["gtr_gtr_outcome_type"])
     save_disagreements(subtype_disagreements, subtype_comparison, 
                        "subtype", "outcomes")
     outcomes.drop(columns=subtype_source_columns, inplace=True, errors="ignore")
-    print(f"{'Merge Rule':<30}: "
+    print(f"{'Merge Rule':<35}: "
           "Majority vote among useful types; "
           "source priority used as fallback; "
           "('other', 'other') used only when no useful type exists")
@@ -1558,7 +1596,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     year_priority = get_source_priority_by_outliers(outcomes, "year", SOURCE_PRIORITY)
     source_columns = get_source_columns(outcomes, year_priority, "year")
     outcomes = merge_majority_column(outcomes, "year", year_priority)
-    print(f"{'Merge Rule':<30}: First populated source "
+    print(f"{'Merge Rule':<35}: First populated source "
           f"({' → '.join(source.title() for source in year_priority)})")
     save_disagreements(year_disagreements, year_comparison, "year", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
@@ -1570,7 +1608,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
                                                     "publication_date", SOURCE_PRIORITY)
     source_columns = get_source_columns(outcomes, date_priority, "publication_date")
     outcomes = merge_majority_column(outcomes, "publication_date", date_priority)
-    print(f"{'Merge Rule':<30}: First populated source "
+    print(f"{'Merge Rule':<35}: First populated source "
           f"({' → '.join(source.title() for source in date_priority)})")
     save_disagreements(date_disagreements, date_comparison, "year", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
@@ -1580,7 +1618,7 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         outcomes, "doi", sources)
     source_columns = get_source_columns(outcomes, SOURCE_PRIORITY, "doi")
     outcomes = merge_preferred_column(outcomes, "doi", source_columns)
-    print(f"{'Merge Rule':<30}: First populated source (GtR → Scopus → WoS → OpenAlex)")
+    print(f"{'Merge Rule':<35}: First populated source (GtR → Scopus → WoS → OpenAlex)")
     save_disagreements(doi_disagreements, doi_comparison, "doi", "outcomes")
     outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
@@ -1661,19 +1699,19 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 
     # Report url statistics
     print_summary_header("URL Summary:")
-    print(f"{'Empty Source URLs':<30}: {empty_url_count:,}")
-    print(f"{'Invalid Source URLs':<30}: {invalid_url_count:,}")
-    print(f"{'URL Disagreements':<30}: {len(url_disagreements):,}")
-    print(f"{'DOI Fallbacks':<30}: {doi_fallback_count:,}")
-    print(f"{'No Final URL':<30}: {no_url_count:,}")
-    print(f"{'Merge Rule':<30}: First valid URL by source priority (GtR → Scopus → WoS → OpenAlex); DOI used as fallback")
+    print(f"{'Empty Source URLs':<35}: {empty_url_count:,}")
+    print(f"{'Invalid Source URLs':<35}: {invalid_url_count:,}")
+    print(f"{'URL Disagreements':<35}: {len(url_disagreements):,}")
+    print(f"{'DOI Fallbacks':<35}: {doi_fallback_count:,}")
+    print(f"{'No Final URL':<35}: {no_url_count:,}")
+    print(f"{'Merge Rule':<35}: First valid URL by source priority (GtR → Scopus → WoS → OpenAlex); DOI used as fallback")
 
     # Save url disagreements
     if url_disagreements:
         disagreement_file = OUTCOME_DISAGREEMENT_DIR / "url_disagreements.csv"
         pd.DataFrame(url_disagreements).to_csv(
             disagreement_file, index=False, encoding="utf-8")
-        print(f"{'Disagreements Saved':<30}: {disagreement_file.name}")
+        print(f"{'Disagreements Saved':<35}: {disagreement_file.name}")
 
     # Remove source url columns
     source_url_columns = [
@@ -1691,6 +1729,35 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
 
     # KEYWORD COVERAGE
     keyword_summary(outcomes)
+
+    cols_to_remove = [
+        "project_id",
+        "project_title",
+        "project_acronym",
+        "project_start_date",
+        "project_end_date",
+        "grant_category",
+        "funding_type",
+        "grant_reference",
+        "project_openalex_url",
+        "source_id",
+        "publisher",
+        "n_addresses",
+        "funding_agencies",
+        "funding_grant_ids",
+        "gtr_outcome_type"
+    ]
+
+    source_columns_to_remove = [
+        f"{source}_{column}"
+        for source in sources
+        for column in cols_to_remove
+    ]
+    outcomes.drop(
+        columns=source_columns_to_remove,
+        inplace=True,
+        errors="ignore"
+    )
     return outcomes
 
 
