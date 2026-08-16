@@ -102,6 +102,9 @@ def main():
     df = clean_text_columns(df, *TEXT_COLS)
     df = convert_to_numeric(df, *NUMERIC_COLS)
     df = convert_to_date(df, *DATE_COLS)
+    for col in DATE_COLS:
+        if col in df.columns:
+            df[col] = df[col].dt.strftime("%Y-%m-%d")
     df = convert_to_string(df, *STRING_COLS)
     df["funding_type"] = df["funding_type"].str.replace("_", " ")
     df = convert_to_category(df, *CATEGORY_COLS)

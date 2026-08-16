@@ -120,10 +120,27 @@ def clean_year(value):
             return value
     return pd.NA
 
+def get_dissemination_years(value):
+    if pd.isna(value):
+        return []
+    # Handle lists directly
+    if isinstance(value, list):
+        values = value
+    else:
+        # GtR values may arrive as strings containing separators
+        values = re.split(r"\s*[,;]\s*", str(value))
+    years = []
+    for item in values:
+        year = clean_year(item)
+        if pd.notna(year):
+            years.append(year)
+    return years
+
 def merge_date(df):
     """
     Create a common 'year' column from available date/year fields.
-
+    Creates 'start_year' and 'end_year' where multiple years are
+    available.
     datePublished is renamed to publication_date and retained.
     Other source date/year fields are removed afterwards.
     """
@@ -131,59 +148,73 @@ def merge_date(df):
     if "datePublished" in df.columns:
         df = df.rename(columns={"datePublished": "publication_date"})
     if "publication_date" in df.columns:
-        df["publication_date"] = pd.to_datetime(
-            df["publication_date"],
-            errors="coerce")
-        
-        # Use publication date as first priority for year
-        df["year"] = (
-            df["publication_date"]
+        df = convert_to_date(df, "publication_date")
+
+    # Initialise start/end year columns
+    df["start_year"] = pd.Series(pd.NA, index=df.index, dtype="string")
+    df["end_year"] = pd.Series(pd.NA, index=df.index, dtype="string")
+
+    if "yearsOfDissemination" in df.columns:
+        dissemination_years = df["yearsOfDissemination"].apply(
+            get_dissemination_years
+        )
+
+        df["start_year"] = dissemination_years.apply(
+            lambda years: years[0] if years else pd.NA
+        ).astype("string")
+
+        df["end_year"] = dissemination_years.apply(
+            lambda years: years[-1] if years else pd.NA
+        ).astype("string")
+
+    # Convert start/end Unix timestamps correctly
+    df = convert_to_date(df, "start", "end")
+
+    if "start" in df.columns:
+        start_year = (
+            df["start"]
             .dt.year
-            .astype("Int64")
-            .astype("string"))
-        
-    # Other year fields are fallbacks
+            .apply(lambda x: clean_year(x) if pd.notna(x) else pd.NA)
+            .astype("string")
+        )
+
+        df["start_year"] = df["start_year"].fillna(start_year)
+
+    if "end" in df.columns:
+        end_year = (
+            df["end"]
+            .dt.year
+            .apply(lambda x: clean_year(x) if pd.notna(x) else pd.NA)
+            .astype("string")
+        )
+
+        df["end_year"] = df["end_year"].fillna(end_year)
+
+    # Create year
+    df["year"] = pd.Series(pd.NA, index=df.index, dtype="string")
     year_columns = [
-        "yearFirstProvided",
-        "yearsOfDissemination",
-        "yearEstablished",
-        "yearDevelopmentCompleted",
-        "yearProtectionGranted"
-    ]
+            "yearFirstProvided",
+            "yearEstablished",
+            "yearDevelopmentCompleted",
+            "yearProtectionGranted",
+        ]
+    if "publication_date" in df.columns:
+        publication_year = (df["publication_date"].dt.year
+            .apply(lambda x: clean_year(x) if pd.notna(x) else pd.NA)
+            .astype("string"))
+        df["year"] = df["year"].fillna(publication_year)
     for col in year_columns:
         if col not in df.columns:
             continue
-        if col == "yearsOfDissemination":
-            values = (
-                df[col]
-                .astype("string")
-                .str.replace(r"\s*,\s*", "; ", regex=True)
-                .str.replace(r"\.0$", "", regex=True))
-        else:
-            values = df[col].apply(clean_year).astype("string")
+        values = df[col].apply(clean_year).astype("string")
         df["year"] = df["year"].fillna(values)
+    df["year"] = df["year"].fillna(df["start_year"])
+    # If no start year present and there is end year, use it
+    df["year"] = df["year"].fillna(df["end_year"])
 
-    # Use start/end dates as further fallbacks
-    if "start" in df.columns:
-        df["start"] = pd.to_datetime(df["start"], errors="coerce")
-        start_year = df["start"].dt.year
-        if "end" in df.columns:
-            df["end"] = pd.to_datetime(df["end"], errors="coerce")
-            end_year = df["end"].dt.year
-            missing_year = df["year"].isna()
-            for idx in df.index[missing_year]:
-                start = start_year.loc[idx]
-                end = end_year.loc[idx]
-                if pd.notna(start):
-                    if pd.notna(end) and end >= start:
-                        df.loc[idx, "year"] = "; ".join(
-                            str(year)
-                            for year in range(int(start), int(end) + 1))
-                    else:
-                        df.loc[idx, "year"] = str(int(start))
-        else:
-            df["year"] = df["year"].fillna(
-                start_year.astype("Int64").astype("string"))
+    # Validate year values
+    for col in ["start_year", "end_year", "year"]:
+        df[col] = df[col].apply(clean_year).astype("string")
 
     # Remove source year/date fields
     df = df.drop(
@@ -195,7 +226,6 @@ def merge_date(df):
             "yearProtectionGranted",
             "start",
             "end",], errors="ignore")
-    df["year"] = df["year"].astype("string")
     return df
             
 
