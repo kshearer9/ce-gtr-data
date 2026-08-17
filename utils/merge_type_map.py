@@ -124,7 +124,7 @@ OPENALEX_TYPE_MAP = {
     "report": ("publication", "report"),
     "dissertation": ("publication", "thesis"),
     "standard": ("publication", "standard"),
-    "date-paper": ("publication", "data_paper"),
+    "data-paper": ("publication", "data_paper"),
 
     # Databases and models
     "dataset": ("database_or_model", "dataset"),
