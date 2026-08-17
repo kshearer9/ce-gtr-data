@@ -171,20 +171,42 @@ Commit them.
 The README also flagged three data defects. All three were checked against the
 database:
 
-1. **`cited_by` ignores Web of Science.** Confirmed and now fixed. 1,345
-   publications had a WoS citation count that `cited_by` left null. The build
-   adds `cited_by_best` and `cited_by_source`; publications with a citation
-   count rise from 5,291 to 6,636. `cited_by` is left unchanged so the gap
-   stays visible.
+1. **`cited_by` ignores Web of Science.** Confirmed, and it survived the
+   17 August merge rewrite. That rewrite states its rule as "first populated
+   source (WoS then Scopus)" but reports `Sources Combined: 1` and contributes
+   no WoS values. In the current data 4,069 outcomes carry
+   `wos_times_cited_all_db`, 1,942 of those also have `cited_by`, and **2,127
+   have a WoS count with `cited_by` left null**. If WoS were genuinely first,
+   all 4,069 would come through. Raised with Kirsty as a question rather than
+   asserted as a bug, since it was diagnosed from the merge summary and the
+   row counts rather than from reading her merge code.
+
+   The same rewrite deliberately dropped OpenAlex from `cited_by`, so raw
+   coverage fell from 5,291 publications to 4,102. The build's `cited_by_best`
+   recovers the WoS values and brings it to **6,219 of 9,612 publications,
+   65%**. That is still 417 below the pre-rewrite figure, because OpenAlex-only
+   citations are now genuinely absent. `openalex_cited_by` is retained as its
+   own column if a sensitivity analysis wants it.
 2. **"9,551 outcomes have no title."** True but misleading. Of those, 9,508
    are disseminations, collaborations, further fundings and policy influences,
    which GtR records without a title. **Only 5 publications lack one.**
 3. **"9,973 abstracts are GtR descriptions rather than real abstracts."**
-   Directionally right and worth respecting: 3,110 of 9,612 publications have
-   no abstract at all, and where one came from a GtR outcome record it is a
-   grant holder's project description, not a publication abstract. Different
-   register; mixing them will distort a topic model. Use `doi_norm` presence
-   as the proxy for a genuine bibliographic record.
+   Exactly right, and the 17 August merge confirms the figure: 9,973 of 17,376
+   abstracts are GtR descriptions. It sounds fatal for topic modelling and is
+   not, because the contamination sits almost entirely in the non-publication
+   types. Of 9,612 publications, 6,502 have an abstract and **6,428 of those
+   also have a DOI**, so only 74 are description-derived. The usable RQ2
+   corpus is about 6,500 publications, and the constraint is missing abstracts
+   rather than wrong ones. Year is present for 7,501 publications and runs
+   2006 to 2026, so roughly 2,100 drop out of any time series.
+
+4. **Year is merged by source priority, not majority.** Kirsty's note
+   describes a majority vote; the merge reports "first populated source (GtR
+   then Scopus then WoS then OpenAlex)" and its outlier counters read zero
+   across all 3,842 disagreements. **Do not describe it as a majority vote in
+   the methodology.** The behaviour itself is fine and should not be changed:
+   GtR against WoS has a median difference of zero and only 28 records differ
+   by more than a year.
 
 ## 6. Two conventions worth knowing before you write the Results chapter
 

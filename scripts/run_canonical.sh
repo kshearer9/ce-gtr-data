@@ -80,7 +80,7 @@ CHECK
 echo
 echo "--- step 3: clean and merge the project table ---"
 $PY -m scripts.cleaning.clean_gtr_projects || die "project cleaning failed."
-$PY -m scripts.cleaning.merge_datasets || die "merge failed."
+$PY -m scripts.cleaning.merge || die "merge failed."
 
 $PY - <<'CHECK' || die "the merged table does not match the collection."
 import sys
@@ -132,6 +132,16 @@ echo
 echo "--- step 8: classification, sensitivity crosswalk (about 100 min) ---"
 $PY scripts/classification/run_variant.py --crosswalk kirsty \
     || echo "  WARNING: the sensitivity variant failed"
+
+# --- 9. The final database --------------------------------------------------
+# Last step of the pipeline. Joins the merged tables, the institution registry,
+# the discipline labels and the authors into one relational database. Cheap
+# relative to everything above, so it runs unconditionally rather than being
+# left for someone to remember.
+echo
+echo "--- step 9: build the final database (about a minute) ---"
+$PY -m scripts.cleaning.build_final_database \
+    || echo "  WARNING: the database build failed; the cleaned tables are still fine"
 
 echo
 echo "=== $(date) : canonical rebuild finished ==="

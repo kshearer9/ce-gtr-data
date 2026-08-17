@@ -128,9 +128,15 @@ the first non-null value per column across an outcome's link rows.
 | `title`, `abstract`, `type`, `subtype`, `year`, `publication_date` | harmonised bibliographic fields |
 | `doi`, `doi_norm` | as reported, and lower-cased with the resolver prefix stripped. **Join on `doi_norm`** |
 | `source_title`, `url`, `reference_count`, `organisations` | harmonised metadata |
-| `cited_by` | citation count as the merge produced it, from OpenAlex or Scopus only. **Null for 4,321 publications, 1,345 of which do have a count in Web of Science.** Kept unchanged so the gap stays visible |
-| `cited_by_best` | `cited_by` where present, otherwise `wos_times_cited_all_db`. **Use this for any citation analysis.** Raises publications with a citation count from 5,291 to 6,636 |
-| `cited_by_source` | `openalex_or_scopus`, `wos`, or null where neither has one. The recovered WoS counts average 31.8 citations against 32.8 for the rest, so they are not an unusual subset |
+| `cited_by` | citation count as the merge produced it. In practice **Scopus only**: the merge reports its rule as "first populated source (WoS then Scopus)" but contributes no WoS values, leaving 2,127 outcomes with a WoS count and a null `cited_by`. Kept unchanged so the gap stays visible |
+| `cited_by_best` | `cited_by` where present, otherwise `wos_times_cited_all_db`. **Use this for any citation analysis.** Takes publications with a citation count from 4,102 to 6,219 |
+| `cited_by_source` | `openalex_or_scopus`, `wos`, or null where neither has one |
+| `openalex_cited_by` | OpenAlex's own count, 3,082 values, **deliberately not merged**. Scopus and OpenAlex agree exactly on only 25.4% of the papers both cover, though the median absolute difference is 1 citation. Available if a sensitivity analysis wants it |
+| `wos_times_cited_all_db` | WoS count, 4,069 values, the source `cited_by_best` falls back to |
+
+**Citation coverage is 6,219 of 9,612 publications, 65%.** Any citation
+statistic is therefore computed on two thirds of the corpus, and papers
+without a count are missing rather than uncited. Do not treat a null as zero.
 | `is_output` | false for dissemination, collaboration and further_funding |
 | `n_project_links` | how many projects claim this outcome. Greater than one for 612 outcomes |
 | `type_ambiguous` | true where the sources disagreed about the type. One record |
@@ -155,12 +161,20 @@ policy influences (625) — outcome types GtR records without a title. **Filter
 to `type = 'publication'` and titles are effectively complete**, which is what
 topic modelling for RQ2 needs.
 
-Abstracts are the real constraint: 32% of publications have none. Note also
-that where an abstract came from a GtR outcome record rather than a
-bibliographic source it is a *project description* written by the grant
-holder, not a publication abstract. The two are different registers and
-mixing them will distort any topic model. Check `doi_norm` is present as a
-proxy for a genuine bibliographic record before using `abstract` as one.
+The merge reports that **9,973 of 17,376 abstracts are GtR project
+descriptions** rather than publication abstracts, which sounds fatal for topic
+modelling and is not. That contamination sits almost entirely in the
+non-publication types: disseminations (6,074), collaborations (1,621),
+further fundings (1,188) and databases (547) carry a description and no DOI.
+
+Filter to publications and the corpus is clean. Of 9,612 publications, 6,502
+have an abstract and **6,428 of those also have a DOI**, so only 74 are
+description-derived. The usable RQ2 corpus is therefore about **6,500
+publications, 68% of the total**, and the constraint is missing abstracts
+rather than wrong ones.
+
+`year` runs 2006 to 2026 and is present for 7,501 publications, so roughly
+2,100 have no year and drop out of any time series.
 
 ## `project_outcomes` — 21,154 rows
 

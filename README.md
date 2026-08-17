@@ -129,7 +129,7 @@ python3 -m scripts.cleaning.clean_wos_outcomes
 Merges UKRI and OpenAlex projects and outcomes into one dataset each.
 
 ```bash
-python3 -m scripts.cleaning.merge_datasets
+python3 -m scripts.cleaning.merge
 ```
 After completing all steps, cleaned and merged datasets will be available in the `data/cleaned/merged` directory and individual outcome types for OpenAlex including extra metadata are available in 'data/cleaned/outcomes'.
 
@@ -303,3 +303,38 @@ auto-accept confidence. Manual decisions live in
 `institution_type_overrides.csv`, which is committed despite the `data/` ignore
 rule because it is a hand-authored input rather than a generated output. The
 script reads it but never writes it, so re-running cannot destroy the coding.
+
+### 21. Build the final database
+
+The last step of the pipeline. Joins the merged projects and outcomes, the
+institution registry, the discipline labels and the author tables into one
+relational database, so every analysis starts from the same file rather than
+re-deriving the joins for itself.
+
+```bash
+python3 -m scripts.cleaning.build_final_database
+```
+
+Writes to `data/final/`, which is gitignored like the rest of `data/`. The
+database is around 80 MB and is deliberately not committed: the script is what
+is shared, and anyone who needs the database builds it.
+
+| File | Contents |
+|---|---|
+| `ce_ecosystem.db` | SQLite. Ten tables and five views, indexed and keyed |
+| `ce_ecosystem.xlsx` | the same tables for browsing, long text columns dropped |
+| `BUILD_MANIFEST.md` | every input file with its row count, modification time and SHA-256 |
+
+`project_outcomes` is the join between the input side and the output side, so
+linking an award to what it produced needs no further work. `v_input_output`
+gives one row per project with funding, duration, organisation type,
+discipline and every output count already rolled up.
+
+Column meanings are in `docs/DATA_DICTIONARY.md`. `docs/DATASET_STATUS.md`
+records which files are final, which are superseded and which exist only as an
+audit trail.
+
+Two counting conventions are carried side by side. `has_publication` uses the
+source-stacked definition behind the 616 of 1,640 figure in the methodology,
+and `has_publication_merged` uses the deduplicated merged layer, which gives
+615. Both are kept so the reported figure stays reproducible.
