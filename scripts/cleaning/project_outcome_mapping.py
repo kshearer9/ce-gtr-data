@@ -1,13 +1,22 @@
+"""
+Merge outcome records from GtR, OpenAlex, Scopus and Web of Science.
+
+Matches records using project ID + title or description, combines matched
+source IDs, and assigns a global_outcome_id to each unique outcome.
+Outcomes linked to multiple projects are retained as separate project rows.
+"""
+
 from pathlib import Path
 import pandas as pd
 import re
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
 # ---------------------------------------------------------------------------
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-DATA_DIR = ROOT_DIR / "team-code" / "data" / "cleaned"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = ROOT_DIR / "data" / "cleaned"
 
 INPUT_DIR = DATA_DIR / "outcomes"
 OUTPUT_DIR = DATA_DIR / "merged"
@@ -38,6 +47,102 @@ def normalise_identifier(value):
         return ""
     value = str(value).lower()
     return re.sub(r"[^a-z0-9]", "", value)
+
+def create_global_outcome_ids(df):
+    """
+    Assign one global_outcome_id to each unique outcome.
+
+    The same source outcome ID appearing across multiple project rows
+    receives the same global_outcome_id.
+
+    Source IDs are namespaced, so identical IDs from different sources
+    cannot accidentally be treated as the same outcome.
+    """
+    df = df.copy()
+
+    source_id_columns = [
+        "gtr_outcome_id",
+        "openalex_outcome_id",
+        "scopus_outcome_id",
+        "wos_outcome_id"
+    ]
+
+    source_id_columns = [
+        col for col in source_id_columns
+        if col in df.columns
+    ]
+
+    for col in source_id_columns:
+        df[col] = df[col].astype("string").str.strip()
+        df[col] = df[col].replace("", pd.NA)
+
+    parent = {}
+    next_id = 1
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        root_x = find(x)
+        root_y = find(y)
+
+        if root_x != root_y:
+            parent[root_y] = root_x
+
+    for _, row in df.iterrows():
+        source_ids = []
+
+        for col in source_id_columns:
+            value = row[col]
+
+            if pd.notna(value):
+                source = col.replace("_outcome_id", "")
+                source_id = (source, str(value))
+                source_ids.append(source_id)
+
+                if source_id not in parent:
+                    parent[source_id] = source_id
+
+        if len(source_ids) > 1:
+            first_id = source_ids[0]
+
+            for source_id in source_ids[1:]:
+                union(first_id, source_id)
+
+    root_to_global_id = {}
+
+    for source_id in parent:
+        root = find(source_id)
+
+        if root not in root_to_global_id:
+            root_to_global_id[root] = f"OUT{next_id:06d}"
+            next_id += 1
+
+    global_ids = []
+
+    for _, row in df.iterrows():
+        source_ids = []
+
+        for col in source_id_columns:
+            value = row[col]
+
+            if pd.notna(value):
+                source = col.replace("_outcome_id", "")
+                source_ids.append((source, str(value)))
+
+        if not source_ids:
+            global_ids.append(pd.NA)
+            continue
+
+        root = find(source_ids[0])
+        global_ids.append(root_to_global_id[root])
+
+    df.insert(0, "global_outcome_id", global_ids)
+
+    return df
 
 def prepare_dataframe(df, description_column, source):
     """
@@ -281,16 +386,8 @@ def print_match_summary(
     # Final count
     print("\nFINAL DATASET")
     print("-" * 70)
-    print(f"{'Total outcomes':<15}: {len(final_result):>8,}")
-
-    # Match basis
-    print("\nMATCH BASIS")
-    print("-" * 70)
-    if "match_basis" in final_result.columns:
-        match_basis_counts = (final_result["match_basis"].fillna("unknown")
-                              .value_counts())
-        for basis, count in match_basis_counts.items():
-            print(f"{basis:<15}: {count:>8,}")
+    print(f"{'Total outcomes':<18}: {len(final_result):>8,}")
+    print(f"{'Unique outcomes':<18}: {final_result['global_outcome_id'].nunique():>8,}")
 
     # Source combinations
     print("\nSOURCE COVERAGE")
@@ -314,10 +411,10 @@ def main():
     wos_file = INPUT_DIR / "wos_all_outcomes_clean.csv"
 
     # Read data
-    gtr_df = pd.read_csv(gtr_file, encoding = "utf-8")
-    openalex_df = pd.read_csv(openalex_file, encoding = "utf-8")
-    scopus_df = pd.read_csv(scopus_file, encoding = "utf-8")
-    wos_df = pd.read_csv(wos_file, encoding = "utf-8")
+    gtr_df = read_csv(gtr_file, OUTCOME_COLUMN_TYPES)
+    openalex_df = read_csv(openalex_file, OUTCOME_COLUMN_TYPES)
+    scopus_df = read_csv(scopus_file, OUTCOME_COLUMN_TYPES)
+    wos_df = read_csv(wos_file, OUTCOME_COLUMN_TYPES)
 
     original_counts = {
         "gtr": len(gtr_df),
@@ -362,6 +459,9 @@ def main():
         wos_new = pd.DataFrame(new_wos_rows)
         final_result = pd.concat([final_result, wos_new], ignore_index=True)
 
+    # Create global outcome IDs
+    final_result = create_global_outcome_ids(final_result)
+
     match_results = {
         "openalex": {
             "matched": matched_openalex_indices,
@@ -385,11 +485,12 @@ def main():
 
     # Output columns
     output_columns = [
+        "project_id",
+        "global_outcome_id",
         "gtr_outcome_id",
         "openalex_outcome_id",
         "wos_outcome_id",
         "scopus_outcome_id",
-        "project_id",
         "match_basis",
         "source"
     ]

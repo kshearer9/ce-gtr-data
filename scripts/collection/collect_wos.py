@@ -302,7 +302,7 @@ def get_subject_categories(rec):
             traditional.append(content)
         else:
             extended.append(content)
-    return ";".join(traditional), ";".join(extended)
+    return "; ".join(traditional), "; ".join(extended)
 
 
 def get_citation_topics(rec):
@@ -324,11 +324,11 @@ def get_sdgs(rec):
     """Return pipe-joined UN Sustainable Development Goal categories."""
     cats = as_list(dig(rec, "dynamic_data", "citation_related", "SDG",
                        "sdg_category", default=[]))
-    return ";".join(c.get("content", "") for c in cats if isinstance(c, dict))
+    return "; ".join(c.get("content", "") for c in cats if isinstance(c, dict))
 
 
 def get_keywords(rec):
-    """Return (author_keywords, keywords_plus) as pipe-joined strings."""
+    """Return (author_keywords, keywords) as pipe-joined strings."""
     author_kw = as_list(dig(rec, "static_data", "fullrecord_metadata",
                             "keywords", "keyword", default=[]))
     plus_kw = as_list(dig(rec, "static_data", "item", "keywords_plus",
@@ -341,7 +341,7 @@ def get_keywords(rec):
                 out.append(k)
             elif isinstance(k, dict) and k.get("content"):
                 out.append(str(k["content"]))
-        return ";".join(out)
+        return "; ".join(out)
     return flatten(author_kw), flatten(plus_kw)
 
 
@@ -390,7 +390,7 @@ def get_funding(rec):
         p if isinstance(p, str) else str(p.get("content", ""))
         for p in fund_text_parts if p
     )
-    return ";".join(agencies), ";".join(ids), fund_text
+    return "; ".join(agencies), "; ".join(ids), fund_text
 
 
 def _match_key(value):
@@ -426,7 +426,7 @@ def _contributor_index(rec):
     return by_full, by_initial
 
 
-def get_authors(rec):
+def get_author(rec):
     """
     Return (author_names, researcher_ids, orcids) as semicolon-joined strings.
 
@@ -470,10 +470,12 @@ def get_authors(rec):
                 candidates = by_initial.get((last, first[0]), [])
                 if len(candidates) == 1:
                     rid, orcid = candidates[0]
-        rids.append(rid)
-        orcids.append(orcid)
+        if rid:
+            rids.append(rid)
+        if orcid:
+            orcids.append(orcid)
 
-    return ";".join(display), ";".join(rids), ";".join(orcids)
+    return "; ".join(display), "; ".join(rids), "; ".join(orcids)
 
 
 def get_institutions(rec):
@@ -509,6 +511,18 @@ def get_institutions(rec):
         })
     return rows
 
+def clean_institution_name(name):
+    """Clean a WoS institution name by removing location suffixes."""
+    if not name:
+        return None
+    name = str(name).strip()
+    # Remove trailing UK / United Kingdom suffixes
+    name = re.sub(r"\s*-\s*UK$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*-\s*United Kingdom$", "", name, flags=re.IGNORECASE)
+    # Normalise whitespace
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
 
 # ---------------------------------------------------------------------------
 # RECORD FLATTENING
@@ -523,11 +537,11 @@ def flatten_record(rec, project_id, grant_reference):
     macro, meso, micro = get_citation_topics(rec)
     author_kw, plus_kw = get_keywords(rec)
     agencies, grant_ids, fund_text = get_funding(rec)
-    authors, rids, orcids = get_authors(rec)
+    author, rids, orcids = get_author(rec)
 
     doctypes = as_list(dig(rec, "static_data", "summary", "doctypes",
                            "doctype", default=[]))
-    doctype_str = ";".join(d if isinstance(d, str) else str(d.get("content", ""))
+    doctype_str = "; ".join(d if isinstance(d, str) else str(d.get("content", ""))
                            for d in doctypes if d)
 
     return {
@@ -548,24 +562,25 @@ def flatten_record(rec, project_id, grant_reference):
         "sort_date": dig(rec, "static_data", "summary", "pub_info", "sortdate"),
         "early_access_year": dig(rec, "static_data", "summary", "pub_info",
                                  "early_access_year"),
-        "doctype": doctype_str,
+        "type": doctype_str,
         "publisher": dig(rec, "static_data", "summary", "publishers", "publisher",
                          "names", "name", "display_name"),
         "open_access_gold": dig(rec, "static_data", "summary", "pub_info",
                                 "journal_oas_gold"),
         # Impact measures (the point of the WoS pull for inputs-vs-outputs work)
         "times_cited_core": core_tc,
-        "times_cited_all_db": all_tc,
-        "usage_180days": dig(rec, "dynamic_data", "wos_usage", "last180days"),
-        "usage_alltime": dig(rec, "dynamic_data", "wos_usage", "alltime"),
+        "cited_by": all_tc,
         "reference_count": dig(rec, "static_data", "fullrecord_metadata", "refs",
                                "count"),
         # People
-        "authors": authors,
+        "author": author,
         "researcher_ids": rids,
         "orcids": orcids,
         "n_addresses": dig(rec, "static_data", "fullrecord_metadata", "addresses",
                            "count"),
+        "institutions": "; ".join(clean_institution_name(inst["institution"])
+                                  for inst in get_institutions(rec)
+                                  if inst.get("institution")),
         # Funding (evidence for the match, and multi-grant detection)
         "funding_agencies": agencies,
         "funding_grant_ids": grant_ids,
@@ -573,10 +588,10 @@ def flatten_record(rec, project_id, grant_reference):
         # Text
         "abstract": get_abstract(rec),
         "author_keywords": author_kw,
-        "keywords_plus": plus_kw,
+        "keywords": plus_kw,
         # Supplementary taxonomies, QUARANTINED from the discipline crosswalk
-        "wos_categories_traditional": traditional,
-        "wos_categories_extended": extended,
+        "categories_traditional": traditional,
+        "categories_extended": extended,
         "citation_topic_macro": macro,
         "citation_topic_meso": meso,
         "citation_topic_micro": micro,

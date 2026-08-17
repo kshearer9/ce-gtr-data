@@ -14,11 +14,13 @@ Exported outputs:
 """
 
 from pathlib import Path
+import re
 import pandas as pd
 from utils.cleaning import (normalise_name, convert_to_string, 
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE PATHS
@@ -50,13 +52,16 @@ STRING_COLUMNS = [
     "start_page",
     "end_page",
     "page_range",
-    "scopus_url",
     "institutions",
     "issn",
-    "authors",
+    "author",
     "subject_areas",
     "keywords",
-    "journal"
+    "journal",
+    "year",
+    "source_id",
+    "pubmed_id"
+
 ]
 
 TEXT_COLUMNS = [
@@ -65,9 +70,7 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "citation_count",
-    "source_id",
-    "pubmed_id",
+    "cited_by",
     "reference_count"
 ]
 
@@ -76,15 +79,15 @@ DATE_COLUMNS = [
 ]
 
 CATEGORY_COLUMNS = [
-    "publication_type",
-    "aggregation_type"
+    "type"
 ]
 
 COLS_TO_DROP = [
     "open_access",
     "open_access_flag",
     "publisher",
-    "page_range"
+    "page_range",
+    "url"
 ]
 
 
@@ -92,14 +95,14 @@ COLS_TO_DROP = [
 # CLEANING FUNCTIONS
 # ---------------------------------------------------------------------------
 
-def clean_authors(authors):
+def clean_author(author):
     """
     Normalise semicolon-separated author names.
     """
-    if pd.isna(authors):
+    if pd.isna(author):
         return pd.NA
     cleaned = []
-    for name in str(authors).split(";"):
+    for name in str(author).split(";"):
         name = name.strip()
         if not name:
             continue
@@ -118,12 +121,42 @@ def clean_scopus_outcome_id(value):
         value = value[10:] 
     return value
 
+def clean_issn(value):
+    """
+    Clean ISSN/EISSN values.
+    Ensure 8 characters, hyphen is present 
+    and returns multiples separated by ";"
+    """
+    if pd.isna(value):
+        return pd.NA
+    value = str(value).strip().upper()
+    if not value:
+        return pd.NA
+    # Find possible ISSNs, with or without a hyphen.
+    matches = re.findall(r'(?<!\d)\d{4}-?\d{3}[0-9X](?!\d)',
+                         value)
+    if not matches:
+        return pd.NA
+    cleaned = []
+    for issn in matches:
+        # Remove existing hyphen
+        issn = issn.replace("-", "")
+        # Must be exactly 8 characters
+        if len(issn) != 8:
+            continue
+        # Reinsert the hyphen
+        issn = f"{issn[:4]}-{issn[4:]}"
+        cleaned.append(issn)
+    # Remove duplicates while preserving order
+    cleaned = list(dict.fromkeys(cleaned))
+    return "; ".join(cleaned) if cleaned else pd.NA
+
 def clean_df(df):
-    removed_dupes = pd.DataFrame
     # Remove SCOPUS_ID: prefix
     if "outcome_id" in df.columns: 
         df["outcome_id"] = df["outcome_id"].apply(clean_scopus_outcome_id)
     # Remove duplicate project-outcome matches
+    removed_dupes = pd.DataFrame()
     if {"project_id", "outcome_id"}.issubset(df.columns):
         before = len(df)
         # Keep the duplicates that will be removed
@@ -152,15 +185,21 @@ def main():
         raise FileNotFoundError(
             "Could not find scopus_outcomes_latest.csv")
     
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df, duplicate_rows = clean_df(df)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)
+    # Createyear column
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].apply(
+            lambda x: str(x.year) if pd.notna(x) else pd.NA)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
+    if "issn" in df.columns:
+        df["issn"] = df["issn"].apply(clean_issn)
     df = convert_to_string(df, *STRING_COLUMNS)
-    df["authors_clean"] = df["authors"].apply(clean_authors)
+    df["author_clean"] = df["author"].apply(clean_author)
     df["subject_areas"] = df["subject_areas"].str.replace(
         r"\([^)]*\)", "", regex=True)
     output_file = OUTPUT_DIR / "scopus_all_outcomes_clean.csv"
@@ -211,9 +250,11 @@ def main():
         ref_df = convert_to_category(ref_df, "city", "country")
         ref_df = convert_to_numeric(ref_df, "cited_year")
         ref_df = clean_text_columns(ref_df, "citing_title", "cited_title")
+        if "issn" in df.columns:
+            df["issn"] = df["issn"].apply(clean_issn)
         ref_df = convert_to_string(ref_df, "citing_project_id", "citing_grant_reference", 
                                    "citing_eid", "citing_doi", "cited_doi", "cited_source",
-                                   "cited_authors", "reference_text")
+                                   "cited_author", "reference_text")
         df = df.dropna(axis=1, how="all")
         ref_output_file = OUTPUT_DIR / "scopus_references_clean.csv"
         ref_df.to_csv(ref_output_file, index = False, encoding = "utf-8")

@@ -17,10 +17,13 @@ Exported outputs:
 
 from pathlib import Path
 import pandas as pd
+import re
 from utils.cleaning import (normalise_name, convert_to_string,
                             clean_text_columns,
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
+
 
 # ---------------------------------------------------------------------------
 # FILE PATHS
@@ -48,67 +51,67 @@ STRING_COLUMNS = [
     "eissn",
     "source_title",
     "publisher",
-    "authors",
+    "author",
     "researcher_ids",
     "orcids",
     "funding_agencies",
     "funding_grant_ids",
     "author_keywords",
-    "keywords_plus",
-    "wos_categories_traditional",
-    "wos_categories_extended",
+    "keywords",
+    "categories_traditional",
+    "categories_extended",
     "citation_topic_macro",
     "citation_topic_meso",
     "citation_topic_micro",
     "sdg_categories",
-    "pub_month",
+    "year",
+    "early_access_year"
 ]
 
 TEXT_COLUMNS = [
     "title",
     "abstract",
-    "funding_text",
+    "funding_text"
 ]
 
 NUMERIC_COLUMNS = [
-    "pub_year",
-    "early_access_year",
-    "times_cited_core",
     "times_cited_all_db",
-    "usage_180days",
-    "usage_alltime",
     "reference_count",
-    "n_addresses",
+    "n_addresses"
 ]
 
 DATE_COLUMNS = [
     "cover_date",
-    "sort_date",
+    "sort_date"
 ]
 
 CATEGORY_COLUMNS = [
-    "doctype",
-    "open_access_gold",
+    "type",
+    "open_access_gold"
 ]
 
-# Nothing is dropped: every collected field is either analytical (citations,
-# usage), match evidence (funding text and grant ids) or a quarantined
-# taxonomy kept for the publication-side label comparison.
-COLS_TO_DROP = []
+# Dropping project-related fields
+COLS_TO_DROP = ["funding_agencies",
+                "funding_grant_ids",
+                "funding_text",
+                "n_addresses",
+                "early_access_year",
+                "open_access_gold",
+                "times_cited_core"]
 
 
 # ---------------------------------------------------------------------------
 # CLEANING FUNCTIONS
 # ---------------------------------------------------------------------------
 
-def clean_authors(authors):
+def clean_author(author):
     """
     Normalise semicolon-separated author names.
     """
-    if pd.isna(authors):
+    if pd.isna(author):
         return pd.NA
     cleaned = []
-    for name in str(authors).split(";"):
+    for name in str(author).split(";"):
         name = name.strip()
         if not name:
             continue
@@ -126,6 +129,51 @@ def clean_wos_outcome_id(value):
     if value.upper().startswith("WOS:"): 
         value = value[4:] 
     return value
+
+def make_doi_url(doi):
+    """
+    Create a DOI URL from a DOI value.
+    """
+    if pd.isna(doi):
+        return pd.NA
+    doi = str(doi).strip()
+    if not doi:
+        return pd.NA
+    # Remove an existing DOI URL if present.
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.IGNORECASE)
+    # Remove a leading "doi:" if present.
+    doi = re.sub(r"^doi:\s*", "", doi, flags=re.IGNORECASE)
+    return f"https://doi.org/{doi}"
+
+def clean_issn(value):
+    """
+    Clean ISSN/EISSN values.
+    Ensure 8 characters, hyphen is present 
+    and returns multiples separated by ";"
+    """
+    if pd.isna(value):
+        return pd.NA
+    value = str(value).strip().upper()
+    if not value:
+        return pd.NA
+    # Find possible ISSNs, with or without a hyphen.
+    matches = re.findall(r'(?<!\d)\d{4}-?\d{3}[0-9X](?!\d)',
+                         value)
+    if not matches:
+        return pd.NA
+    cleaned = []
+    for issn in matches:
+        # Remove existing hyphen
+        issn = issn.replace("-", "")
+        # Must be exactly 8 characters
+        if len(issn) != 8:
+            continue
+        # Reinsert the hyphen
+        issn = f"{issn[:4]}-{issn[4:]}"
+        cleaned.append(issn)
+    # Remove duplicates while preserving order
+    cleaned = list(dict.fromkeys(cleaned))
+    return "; ".join(cleaned) if cleaned else pd.NA
 
 
 def clean_df(df):
@@ -153,6 +201,27 @@ def clean_df(df):
     df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
     return df, removed_dupes
 
+def drop_empty_columns(df):
+    """Drop columns containing no non-empty values."""
+    empty_columns = []
+    for column in df.columns:
+        values = df[column]
+        # Missing values
+        if values.isna().all():
+            empty_columns.append(column)
+            continue
+        # Also treat empty/whitespace-only strings as empty
+        non_empty = values.notna() & values.astype(str).str.strip().ne("")
+        if not non_empty.any():
+            empty_columns.append(column)
+    if empty_columns:
+        print()
+        print("Dropped empty columns:")
+        for column in empty_columns:
+            print(f"  - {column}")
+        df = df.drop(columns=empty_columns)
+    return df
+
 
 # ---------------------------------------------------------------------------
 # MAIN
@@ -166,7 +235,7 @@ def main():
         raise FileNotFoundError(
             "Could not find wos_outcomes_latest.csv")
 
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df, duplicate_rows = clean_df(df)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)
@@ -176,10 +245,29 @@ def main():
     # them all to NaT. Parse them directly instead.
     for col in DATE_COLUMNS:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], format="mixed", errors="coerce")
+            df[col] = (pd.to_datetime(df[col], format="mixed", 
+                                     errors="coerce"))
+    # Use sort-date as a fallback where cover-date is missing
+    if "cover_date" in df.columns and "sort_date" in df.columns:
+        df["cover_date"] = df["cover_date"].fillna(df["sort_date"])
+    # Rename the final publication date field
+    df = df.rename(columns={"cover_date": "publication_date"})
+    # Create a general publication year field from publication_date
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].dt.year
+    # Remove the other date fields no longer needed
+    df = df.drop(columns=["sort_date", "pub_year", "pub_month"], errors="ignore")
     df = convert_to_category(df, *CATEGORY_COLUMNS)
+    if "issn" in df.columns:
+        df["issn"] = df["issn"].apply(clean_issn)
+    if "eissn" in df.columns:
+        df["eissn"] = df["eissn"].apply(clean_issn)
     df = convert_to_string(df, *STRING_COLUMNS)
-    df["authors_clean"] = df["authors"].apply(clean_authors)
+    # Create a DOI URL from the cleaned DOI.
+    if "doi" in df.columns:
+        df["url"] = df["doi"].apply(make_doi_url)
+    df["author_clean"] = df["author"].apply(clean_author)
+    df = drop_empty_columns(df)
     output_file = OUTPUT_DIR / "wos_all_outcomes_clean.csv"
     df.to_csv(output_file, index=False, encoding="utf-8")
 

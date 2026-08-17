@@ -4,6 +4,7 @@ from utils.cleaning import (normalise_name, convert_to_string,
                             convert_to_date, clean_text_columns, 
                             convert_to_category, convert_to_numeric)
 from utils.constants import TEXT_TO_REPLACE
+from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 
 # ---------------------------------------------------------------------------
 # FILE SETUP
@@ -23,12 +24,12 @@ STRING_COLUMNS = [
     "project_title",
     "grant_reference",
     "project_openalex_url",
-    "authors",
+    "author",
     "institutions",
     "topics",
     "doi",
     "url",
-    "openalex_url"
+    "year"
 ]
 
 TEXT_COLUMNS = [
@@ -52,14 +53,14 @@ CATEGORY_COLUMNS = [
     "subfield"
 ]
 
-def clean_authors(authors):
+def clean_author(author):
     """
     Normalise semicolon-separated author names.
     """
-    if pd.isna(authors):
+    if pd.isna(author):
         return pd.NA
     cleaned = []
-    for name in str(authors).split(";"):
+    for name in str(author).split(";"):
         name = name.strip()
         if not name:
             continue
@@ -95,15 +96,20 @@ def main():
         raise FileNotFoundError(
             "Could not find openalex_outcomes_latest.csv")
     
-    df = pd.read_csv(input_file, encoding="utf-8")
+    df = read_csv(input_file, OUTCOME_COLUMN_TYPES)
     df = clean_df(df)
     df = clean_text_columns(df, *TEXT_COLUMNS)
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     df = convert_to_date(df, *DATE_COLUMNS)
+    # Createyear column
+    if "publication_date" in df.columns:
+        df["year"] = df["publication_date"].apply(
+            lambda x: str(x.year) if pd.notna(x) else pd.NA)
     df = convert_to_category(df, *CATEGORY_COLUMNS)
     df = convert_to_string(df, *STRING_COLUMNS)
-    df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id)
-    df["authors_clean"] = df["authors"].apply(clean_authors)
+    # Extract outcome id from urls
+    df["outcome_id"] = df["openalex_url"].apply(extract_openalex_id).astype("string")
+    df["author_clean"] = df["author"].apply(clean_author)
 
     output_file = OUTPUT_DIR / "openalex_all_outcomes_clean.csv"
     df.to_csv(output_file, index = False, encoding = "utf-8")

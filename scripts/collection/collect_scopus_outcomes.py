@@ -143,15 +143,14 @@ KEEP_COLUMNS = {
     "abstracts-retrieval-response.coredata.prism:startingPage": "start_page",
     "abstracts-retrieval-response.coredata.prism:endingPage": "end_page",
     "abstracts-retrieval-response.coredata.prism:pageRange": "page_range",
-    "abstracts-retrieval-response.coredata.subtypeDescription": "publication_type",
-    "abstracts-retrieval-response.coredata.prism:aggregationType": "aggregation_type",
-    "abstracts-retrieval-response.coredata.citedby-count": "citation_count",
+    "abstracts-retrieval-response.coredata.subtypeDescription": "type",
+    "abstracts-retrieval-response.coredata.citedby-count": "cited_by",
     "abstracts-retrieval-response.coredata.openaccess": "open_access",
     "abstracts-retrieval-response.coredata.openaccessFlag": "open_access_flag",
-    "abstracts-retrieval-response.coredata.prism:url": "scopus_url",
+    "abstracts-retrieval-response.coredata.prism:url": "url",
 
     # Authors and institutions
-    "abstracts-retrieval-response.authors.author": "authors",
+    "abstracts-retrieval-response.authors.author": "author",
     "abstracts-retrieval-response.affiliation": "institutions",
 
     # Subject classifications
@@ -295,7 +294,7 @@ def parse_authors(authors):
       author_names        the indexed name, aligned to the two above
     """
     if not isinstance(authors, list):
-        return {"authors": None, "author_names": None,
+        return {"author": None, "author_names": None,
                 "author_ids": None, "author_given_names": None}
 
     names = []
@@ -311,7 +310,7 @@ def parse_authors(authors):
         given_names.append(str(author.get("ce:given-name") or ""))
 
     return {
-        "authors": "; ".join(names),
+        "author": "; ".join(names),
         "author_names": "; ".join(aligned_names),
         "author_ids": "; ".join(auids),
         "author_given_names": "; ".join(given_names),
@@ -391,9 +390,9 @@ def clean_df(df, timestamp):
     df["outcome_id"] = df["outcome_id"].str.replace("OUTCOME_ID:", "", regex=False)
 
     # Flatten nested author information
-    if "authors" in df.columns:
-        author_data = (df["authors"].apply(parse_authors).apply(pd.Series))
-        df = pd.concat([df.drop(columns=["authors"]), author_data], axis=1)
+    if "author" in df.columns:
+        author_data = (df["author"].apply(parse_authors).apply(pd.Series))
+        df = pd.concat([df.drop(columns=["author"]), author_data], axis=1)
 
     # Extract affiliations into a semicolon-separated column and institutions lookup table
     institution_rows = []
@@ -457,25 +456,25 @@ def save_references(df):
                     doi = item.get("$")
 
             # Authors
-            authors = []
-            ref_authors = (ref_info.get("ref-authors", {}))
-            if "author" in ref_authors:
-                author_list = ref_authors["author"]
+            author = []
+            ref_author = (ref_info.get("ref-author", {}))
+            if "author" in ref_author:
+                author_list = ref_author["author"]
                 if isinstance(author_list, dict):
                     author_list = [author_list]
                 for author in author_list:
                     name = (author.get("ce:indexed-name") or author.get("ce:surname"))
                     if name:
-                        authors.append(name)
+                        author.append(name)
 
-            elif "collaboration" in ref_authors:
-                collaborations = ref_authors["collaboration"]
+            elif "collaboration" in ref_author:
+                collaborations = ref_author["collaboration"]
                 if isinstance(collaborations, dict):
                     collaborations = [collaborations]
                 for collaboration in collaborations:
                     name = collaboration.get("ce:text")
                     if name:
-                        authors.append(name)
+                        author.append(name)
 
             # Year
             year = (ref_info.get("ref-publicationyear", {}).get("@first"))
@@ -503,7 +502,7 @@ def save_references(df):
                 "cited_doi": doi,
                 "cited_year": year,
                 "cited_source": source,
-                "cited_authors":"; ".join([a for a in authors if a]),
+                "cited_author":"; ".join([a for a in author if a]),
                 "reference_text":ref.get("ce:source-text")
             })
     return citations
