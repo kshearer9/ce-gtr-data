@@ -470,8 +470,10 @@ def get_author(rec):
                 candidates = by_initial.get((last, first[0]), [])
                 if len(candidates) == 1:
                     rid, orcid = candidates[0]
-        rids.append(rid)
-        orcids.append(orcid)
+        if rid:
+            rids.append(rid)
+        if orcid:
+            orcids.append(orcid)
 
     return "; ".join(display), "; ".join(rids), "; ".join(orcids)
 
@@ -567,7 +569,7 @@ def flatten_record(rec, project_id, grant_reference):
                                 "journal_oas_gold"),
         # Impact measures (the point of the WoS pull for inputs-vs-outputs work)
         "times_cited_core": core_tc,
-        "times_cited_all_db": all_tc,
+        "cited_by": all_tc,
         "reference_count": dig(rec, "static_data", "fullrecord_metadata", "refs",
                                "count"),
         # People

@@ -75,7 +75,6 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
-    "times_cited_core",
     "times_cited_all_db",
     "reference_count",
     "n_addresses"
@@ -97,7 +96,8 @@ COLS_TO_DROP = ["funding_agencies",
                 "funding_text",
                 "n_addresses",
                 "early_access_year",
-                "open_access_gold"]
+                "open_access_gold",
+                "times_cited_core"]
 
 
 # ---------------------------------------------------------------------------
