@@ -2,7 +2,7 @@ import pandas as pd
 from utils.merge_config import (
     OUTCOME_DISAGREEMENT_DIR,
     SOURCE_PRIORITY,
-    TYPE_MAPS,
+    TYPE_MAPS
 )
 from utils.merge_type_map import GTR_TYPE_MAP
 from scripts.cleaning.merge_helpers.merge_helpers import (
@@ -14,6 +14,7 @@ from scripts.cleaning.merge_helpers.merge_helpers import (
     majority_or_priority,
     merge_majority_column,
     get_source_priority_by_outliers,
+    get_valid_type_subtype_pairs
 )
 from scripts.cleaning.merge_helpers.comparison import (
     normalise_for_comparison,
@@ -83,7 +84,7 @@ def merge_organisations_by_priority(df):
     disagreements_df = pd.DataFrame(disagreements)
 
     print_summary_header("Organisation Summary:")
-    print(f"{'Sources Compared':<35}: {len(available_columns):,}")
+    print(f"{'Sources Combined':<35}: {len(available_columns):,}")
     print(f"{'Records with Organisations':<35}: {records_with_organisations:,}")
     print(f"{'Records with Disagreements':<35}: {len(disagreements_df):,}")
     print(f"{'Merge Rule':<35}: First populated source (GtR → Scopus → WoS → OpenAlex)")
@@ -470,6 +471,78 @@ def map_outcome_types(df, source, type_map):
 
 def merge_outcome_types(df, sources=None):
     """
+    Merge type/subtype pairs using majority vote, with source priority
+    as the tie-breaker.
+    """
+    if sources is None:
+        sources = SOURCE_PRIORITY
+    valid_pairs = get_valid_type_subtype_pairs(TYPE_MAPS)
+    final_types = []
+    final_subtypes = []
+    for _, row in df.iterrows():
+        values = {}
+        for source in sources:
+            type_column = f"{source}_type"
+            subtype_column = f"{source}_subtype"
+            if type_column not in df.columns:
+                continue
+            source_type = row[type_column]
+            if pd.isna(source_type) or not str(source_type).strip():
+                continue
+            source_type = str(source_type).strip().lower()
+            source_subtype = row.get(subtype_column)
+            if (pd.isna(source_subtype)
+                or not str(source_subtype).strip()):
+                source_subtype = "other"
+            else:
+                source_subtype = str(source_subtype).strip().lower()
+            source_pair = (source_type, source_subtype)
+            if source_pair not in valid_pairs:
+                continue
+            if source_pair == ("other", "other"):
+                continue
+            values[source] = source_pair
+        if not values:
+            final_types.append("other")
+            final_subtypes.append("other")
+            continue
+
+        selected_value = majority_or_priority(values, sources)
+        selected_type, selected_subtype = selected_value
+        final_types.append(selected_type)
+        final_subtypes.append(selected_subtype)
+    df["type"] = final_types
+    df["subtype"] = final_subtypes
+
+    # GtR fallback for records with no useful type/subtype.
+    if "gtr_gtr_outcome_type" in df.columns:
+        for index, row in df.iterrows():
+            current_type = row["type"]
+            current_subtype = row["subtype"]
+            type_missing = (
+                pd.isna(current_type)
+                or not str(current_type).strip()
+                or str(current_type).strip().lower() == "other")
+            subtype_missing = (
+                pd.isna(current_subtype)
+                or not str(current_subtype).strip()
+                or str(current_subtype).strip().lower() == "other")
+            if not (type_missing and subtype_missing):
+                continue
+            gtr_value = row["gtr_gtr_outcome_type"]
+            if pd.isna(gtr_value) or not str(gtr_value).strip():
+                continue
+            gtr_value = str(gtr_value).strip().lower()
+            if gtr_value not in GTR_TYPE_MAP:
+                continue
+            mapped_type, mapped_subtype = GTR_TYPE_MAP[gtr_value]
+            if (mapped_type, mapped_subtype) in valid_pairs:
+                df.at[index, "type"] = mapped_type
+                df.at[index, "subtype"] = mapped_subtype
+    return df
+
+def merge_outcome_types(df, sources=None):
+    """
     Merge mapped outcome types using majority vote, with source priority
     as the tie-breaker.
 
@@ -629,40 +702,103 @@ def keyword_summary(df):
             print(f"  Rows with >=1 keyword : {populated.sum():,}")
             print(f"  Total keyword entries : {keyword_count:,}")
 
-def merge_count(df, column, sources):
+def merge_count(df, column, sources, comparison_sources=None):
+    """
+    Merge a count column using source priority and report source comparisons.
+    `sources` controls which sources are used to create the final merged
+    column.
+    `comparison_sources` controls which sources are included in the
+    comparison statistics. 
+    """
+    # columns used to create final merged column
     source_columns = get_source_columns(df, sources, column)
     if not source_columns:
         print(f"No source columns found for {column}.")
         return df
+
+    # columns included in the comparison statistics
+    if comparison_sources is None:
+        comparison_sources = sources
+    comparison_columns = get_source_columns(
+        df, comparison_sources, column)
     comparison, disagreements = check_column_agreement(
         df, column, sources)
-    # Coverage by source
-    for source in sources:
+
+    # Report coverage for every source included in the comparison.
+    for source in comparison_sources:
         source_column = f"{source}_{column}"
-        if source_column in df.columns:
-            present = df[source_column].notna()
-            print(f"{source.title() + ' counts':<35}: "
-                  f"{present.sum():,}")
-    # Difference statistics
-    if len(source_columns) >= 2:
-        first = source_columns[0]
-        second = source_columns[1]
-        both_present = (
-            df[first].notna()
-            & df[second].notna())
-        difference = (df[first] - df[second]).abs()
-        exact_match = (both_present & (difference == 0))
-        less_than_3 = (both_present & (difference > 0)
-                       & (difference < 3))
-        three_or_more = (both_present & (difference >= 3))
-        print(f"{'Both sources present':<35}: {both_present.sum():,}")
-        print(f"{'Exact match':<35}: {exact_match.sum():,}")
-        print(f"{'Less than 3 difference':<35}: {less_than_3.sum():,}")
-        print(f"{'3+ difference':<35}: {three_or_more.sum():,}")
+        if source_column not in df.columns:
+            continue
+        present = (
+            df[source_column].notna()
+            & df[source_column].astype(str).str.strip().ne(""))
+        print(f"{source.title() + ' counts':<35}: {present.sum():,}")
+
+    # Compare every pair of sources included in the comparison.
+    for i, first in enumerate(comparison_columns):
+        for second in comparison_columns[i + 1:]:
+            first_source = first.removesuffix(f"_{column}")
+            second_source = second.removesuffix(f"_{column}")
+            both_present = (df[first].notna() & df[second].notna())
+            if not both_present.any():
+                continue
+            difference = df[first] - df[second]
+            absolute_difference = difference.abs()
+            first_higher = (both_present & (difference > 0))
+            second_higher = (both_present & (difference < 0))
+            exact_match = (both_present & (difference == 0))
+            less_than_3 = (both_present & (absolute_difference > 0)
+                           & (absolute_difference < 3))
+            three_or_more = (both_present & (absolute_difference >= 3))
+            median_difference = difference[both_present].median()
+            median_absolute_difference = (
+                absolute_difference[both_present].median())
+            print()
+            print(f"{first_source.title()} vs "
+                  f"{second_source.title()}:")
+            print(f"{'Both sources present':<35}: "
+                  f"{both_present.sum():,}")
+            print(f"{first_source.title() + ' higher':<35}: "
+                  f"{first_higher.sum():,} "
+                  f"({first_higher.sum() / both_present.sum() * 100:.1f}%)")
+            print(f"{second_source.title() + ' higher':<35}: "
+                  f"{second_higher.sum():,} "
+                  f"({second_higher.sum() / both_present.sum() * 100:.1f}%)")
+            print(f"{'Exact match':<35}: "
+                  f"{exact_match.sum():,} "
+                  f"({exact_match.sum() / both_present.sum() * 100:.1f}%)")
+            print(f"{'Difference 1–2':<35}: "
+                  f"{less_than_3.sum():,} "
+                  f"({less_than_3.sum() / both_present.sum() * 100:.1f}%)")
+            print(f"{'Difference 3+':<35}: "
+                  f"{three_or_more.sum():,} "
+                  f"({three_or_more.sum() / both_present.sum() * 100:.1f}%)")
+            print(f"{'Median difference':<35}: "
+                  f"{median_difference:.1f}")
+            print(f"{'Median absolute difference':<35}: "
+                  f"{median_absolute_difference:.1f}")
+
+    # Report how often all available sources agree.
+    if len(comparison_columns) >= 2:
+        available_all = df[comparison_columns].notna().all(axis=1)
+        all_agree = (df.loc[available_all, comparison_columns]
+                     .nunique(axis=1).eq(1))
+        print()
+        print(f"{'All comparison sources present':<35}: "
+              f"{available_all.sum():,}")
+        print(f"{'All comparison sources agree':<35}: "
+              f"{all_agree.sum():,}")
+
+    # Merge the final column using only the requested merge sources.
     df = merge_preferred_column(df, column, source_columns)
     print(f"{'Merge Rule':<35}: First populated source "
           f"({' → '.join(source.title() for source in sources)})")
-    save_disagreements(disagreements, comparison, column, "outcomes")  
+    excluded_from_merge = [source for source in comparison_sources
+                           if source not in sources]
+    if excluded_from_merge:
+        print(f"{'Comparison-only sources':<35}: "
+              f"{', '.join(source.title() for source in excluded_from_merge)}")
+    save_disagreements(disagreements, comparison, column, "outcomes")
     df.drop(columns=source_columns, inplace=True, errors="ignore")
     return df
 
@@ -749,6 +885,9 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
         save_disagreements(title_disagreements, title_comparison, column, "outcomes")
         outcomes.drop(columns=source_columns, inplace=True, errors="ignore")
 
+    # ABSTRACT, DESCRIPTION AND TITLES MERGE
+    outcomes = merge_title_and_abstract(outcomes)
+
     # TYPE MERGE
     for source in sources:
         outcomes, _ = map_outcome_types(
@@ -777,9 +916,6 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
           "Majority vote among useful types; "
           "source priority used as fallback; "
           "('other', 'other') used only when no useful type exists")
-
-    # ABSTRACT, DESCRIPTION AND TITLES MERGE
-    outcomes = merge_title_and_abstract(outcomes)
 
     # YEAR MERGE
     year_comparison, year_disagreements = check_column_agreement(
@@ -823,10 +959,10 @@ def merge_outcomes(gtr_outcomes, openalex_outcomes, scopus_outcomes,
     outcomes = merge_issn_and_eissn(outcomes)
 
     # REFERENCE COUNT MERGE
-    outcomes = merge_count(outcomes, "reference_count", ["scopus", "wos"])
+    outcomes = merge_count(outcomes, "reference_count", ["wos", "scopus"])
 
     # CITED BY MERGE
-    outcomes = merge_count(outcomes, "cited_by", ["scopus", "openalex"])
+    outcomes = merge_count(outcomes, "cited_by", ["wos", "scopus"], ["scopus", "wos", "openalex"])
 
     # URL MERGE
     outcomes = merge_urls(outcomes, validation_lookup)

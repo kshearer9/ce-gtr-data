@@ -89,7 +89,7 @@ def check_column_agreement(df, column, sources, fallback_columns = None):
 
     # Summary
     print_summary_header(f"{column.title()} Summary:")
-    print(f"{'Sources Compared':<35}: {len(columns):,}")
+    print(f"{'Sources Combined':<35}: {len(columns):,}")
     print(f"{f'Records with {column}':<35}: {records_with_column.sum():,}")
     if fallback_columns:
         print(f"{f'Records with {column} after fallback':<35}: "

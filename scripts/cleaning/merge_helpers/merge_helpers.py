@@ -25,6 +25,13 @@ def get_source_columns(df, sources, column):
             for source in sources
             if f"{source}_{column}" in df.columns]
 
+def get_valid_type_subtype_pairs(type_maps):
+    """Return all valid type/subtype pairs from the source mappings."""
+    valid_pairs = set()
+    for type_map in type_maps.values():
+        valid_pairs.update(type_map.values())
+    return valid_pairs
+
 
 # ---------------------------------------------------------------------------
 # GENERIC MERGE HELPERS
@@ -162,3 +169,4 @@ def get_source_priority_by_outliers(df, column, sources):
         print(f"  {source.title() + ' outlier':<33}: "
               f"{outlier_counts[source]:,}")
     return priority
+
