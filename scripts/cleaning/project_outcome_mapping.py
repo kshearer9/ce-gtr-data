@@ -15,8 +15,8 @@ from utils.col_types import OUTCOME_COLUMN_TYPES, read_csv
 # FILE SETUP
 # ---------------------------------------------------------------------------
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-DATA_DIR = ROOT_DIR / "team-code" / "data" / "cleaned"
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR = ROOT_DIR / "data" / "cleaned"
 
 INPUT_DIR = DATA_DIR / "outcomes"
 OUTPUT_DIR = DATA_DIR / "merged"

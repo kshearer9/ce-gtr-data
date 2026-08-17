@@ -391,7 +391,7 @@ def clean_df(df, timestamp):
 
     # Flatten nested author information
     if "author" in df.columns:
-        author_data = (df["author"].apply(parse_author).apply(pd.Series))
+        author_data = (df["author"].apply(parse_authors).apply(pd.Series))
         df = pd.concat([df.drop(columns=["author"]), author_data], axis=1)
 
     # Extract affiliations into a semicolon-separated column and institutions lookup table

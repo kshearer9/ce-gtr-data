@@ -331,7 +331,7 @@ def get_keywords(rec):
     """Return (author_keywords, keywords) as pipe-joined strings."""
     author_kw = as_list(dig(rec, "static_data", "fullrecord_metadata",
                             "keywords", "keyword", default=[]))
-    plus_kw = as_list(dig(rec, "static_data", "item", "keywords",
+    plus_kw = as_list(dig(rec, "static_data", "item", "keywords_plus",
                           "keyword", default=[]))
     # Entries may be plain strings or {'content': ...} dicts.
     def flatten(items):
