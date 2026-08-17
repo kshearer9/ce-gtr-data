@@ -124,6 +124,7 @@ OPENALEX_TYPE_MAP = {
     "report": ("publication", "report"),
     "dissertation": ("publication", "thesis"),
     "standard": ("publication", "standard"),
+    "date-paper": ("publication", "data_paper"),
 
     # Databases and models
     "dataset": ("database_or_model", "dataset"),
@@ -149,8 +150,9 @@ WOS_TYPE_MAP = {
     "article; proceedings paper": ("publication", "conference_proceedings_paper_abstract_or_review"),
     "review; book chapter": ("publication", "book_chapter"),
     "editorial material; book chapter": ("publication", "book_chapter"),
-    "article; early access": ("publication", "article"),
-    "review; early access": ("publication", "review"),
+    "article; early access": ("publication", "article_or_review"),
+    "review; early access": ("publication", "article_or_review"),
+    "editorial material; early access": ("publication", "editorial"),
     "article; book chapter": ("publication", "book_chapter"),
     "article; retracted publication": ("publication", "retracted_article"),
     "retracted publication": ("publication", "retracted_article"),
