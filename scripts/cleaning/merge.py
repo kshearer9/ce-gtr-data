@@ -122,18 +122,14 @@ def main():
     }
 
     outcome_data = {}
-
     for source, filename in outcome_files.items():
         outcome_file = OUTCOME_INPUT_DIR / filename
-
         if not outcome_file.exists():
             raise FileNotFoundError(
                 f"{source} outcome dataset not found: {outcome_file}")
-
         outcome_data[source] = read_csv(outcome_file, OUTCOME_COLUMN_TYPES)
 
     outcome_map_file = OUTPUT_DIR / "project_outcome_map.csv"
-
     if not outcome_map_file.exists():
         raise FileNotFoundError(
             f"Project-outcome map not found: {outcome_map_file}")
@@ -157,6 +153,15 @@ def main():
         outcome_map=outcome_map,
         validation_lookup=validation_lookup
     )
+
+    # DELETING AUTHORS AND INSTITUTIONS?
+    columns_to_remove = [
+        column for column in outcome_df.columns
+        if column == "organisations"
+        or column.endswith("_author")
+        or column.endswith("_authors")]
+
+    outcome_df.drop(columns=columns_to_remove, inplace=True, errors="ignore")
 
     # Save merged outcomes
     outcome_output_file = OUTPUT_DIR / "outcomes.csv"
