@@ -393,6 +393,71 @@ def build_outcomes() -> tuple[pd.DataFrame, pd.DataFrame]:
     return outcomes, project_outcomes
 
 
+# authors_long.csv's `source` values, mapped to the project_outcomes column
+# holding that source's native outcome id.
+AUTHOR_NATIVE_ID_COLUMNS = {
+    "openalex": "openalex_outcome_id",
+    "scopus": "scopus_outcome_id",
+    "wos": "wos_outcome_id",
+    "gtr": "gtr_outcome_id",
+}
+
+
+def normalise_native_id(value) -> str | None:
+    """Native outcome ids as a merge key across tables that store them
+    differently: project_outcome_map.csv has passed WoS's UT (a zero-padded
+    string like "001794901400001") through a float cast somewhere upstream,
+    which drops the leading zeros and appends ".0". Stripping both brings it
+    back in line with authors_long.csv's untouched string form; openalex,
+    scopus and gtr ids are unaffected by either strip but it's harmless to
+    apply it anyway.
+    """
+    if pd.isna(value):
+        return None
+    return str(value).removesuffix(".0").lstrip("0") or "0"
+
+
+def attach_global_outcome_id(outcome_authors: pd.DataFrame,
+                             project_outcomes: pd.DataFrame) -> pd.DataFrame:
+    """authors_long.csv (-> the `outcome_authors` table) carries `outcome_id`,
+    a source-native id, not the deduplicated `global_outcome_id` used
+    everywhere else in this database. Without this, joining an author to a
+    specific row in `outcomes` means redoing this lookup downstream every
+    time. Build it once here instead, from project_outcomes, the only table
+    that carries both id systems side by side.
+
+    Rows whose outcome never made it into project_outcomes (i.e. it isn't
+    linked to a project in the 1,640-project spine) stay unmatched; that's
+    expected, not a bug, and is reported below rather than silently dropped.
+    """
+    frames = []
+    for source, column in AUTHOR_NATIVE_ID_COLUMNS.items():
+        sub = project_outcomes.loc[project_outcomes[column].notna(),
+                                   ["global_outcome_id", column]]
+        sub = sub.drop_duplicates().rename(columns={column: "outcome_id_norm"})
+        sub["outcome_id_norm"] = sub["outcome_id_norm"].map(normalise_native_id)
+        sub["source"] = source
+        frames.append(sub)
+    lookup = pd.concat(frames, ignore_index=True).drop_duplicates(
+        ["source", "outcome_id_norm"])
+
+    outcome_authors = outcome_authors.copy()
+    outcome_authors["outcome_id_norm"] = (
+        outcome_authors.outcome_id.map(normalise_native_id))
+    merged = outcome_authors.merge(lookup, on=["source", "outcome_id_norm"],
+                                   how="left")
+    n_missing = int(merged.global_outcome_id.isna().sum())
+    if n_missing:
+        warn(f"{n_missing} outcome_authors rows "
+             f"({100 * n_missing / len(merged):.1f}%) have no "
+             f"global_outcome_id; their outcome isn't linked to a project "
+             f"in the spine")
+
+    cols = [c for c in merged.columns if c != "outcome_id_norm"]
+    cols.insert(cols.index("outcome_id") + 1, cols.pop(cols.index("global_outcome_id")))
+    return merged[cols]
+
+
 # ---------------------------------------------------------------------------
 # 4. SOURCE-STACKED COUNTS, the definition the chapter quotes
 # ---------------------------------------------------------------------------
@@ -761,7 +826,8 @@ def main() -> None:
         "project_field_probabilities": read("discipline_probabilities"),
         "publication_field_probabilities": read("publication_probabilities"),
         "authors": read("author_identities"),
-        "outcome_authors": read("authors_long"),
+        "outcome_authors": attach_global_outcome_id(read("authors_long"),
+                                                     project_outcomes),
     }
 
     print("\nCoverage")
