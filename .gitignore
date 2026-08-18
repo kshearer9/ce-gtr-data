@@ -17,3 +17,8 @@ FINAL/
 _methodology_tmp/
 *.log
 ~$*
+
+# Generated diagnostic output, 4.9 MB, rebuilt by
+# scripts/diagnostics/author_standardisation_audit.py and
+# scripts/diagnostics/author_name_review.py. Same reasoning as data/.
+figures/

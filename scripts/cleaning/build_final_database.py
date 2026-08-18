@@ -79,6 +79,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,38 @@ def read(key: str, **kwargs) -> pd.DataFrame:
     if not path.exists():
         raise SystemExit(f"missing input: {path}")
     return pd.read_csv(path, low_memory=False, **kwargs)
+
+
+def numeric(frame: pd.DataFrame, column: str) -> pd.Series:
+    """Numeric view of a column, or an all-null column if it is absent.
+
+    The merged outcome schema is still moving as the merge script is
+    refined, and a column disappearing should degrade the affected field
+    rather than abort the whole build.
+    """
+    if column not in frame.columns:
+        warn(f"column `{column}` is no longer in the merged outcomes; "
+             f"anything derived from it will be null")
+        return pd.Series(pd.NA, index=frame.index, dtype="Float64")
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+# Columns the views select by name. A view referring to a missing column
+# fails at CREATE VIEW with a bare "no such column", which is a poor way to
+# discover a schema change, so check up front and say which and where.
+REQUIRED_OUTCOME_COLUMNS = ["global_outcome_id", "title", "type", "subtype",
+                            "year", "doi", "source_title", "cited_by"]
+
+
+def check_outcome_schema(outcomes: pd.DataFrame) -> None:
+    missing = [c for c in REQUIRED_OUTCOME_COLUMNS if c not in outcomes.columns]
+    if missing:
+        raise SystemExit(
+            "the merged outcomes file no longer carries: "
+            + ", ".join(missing)
+            + "\nThese are selected by name in the database views. Either the "
+              "merge script renamed them, or they moved to another table. "
+              "Update REQUIRED_OUTCOME_COLUMNS and the VIEWS block together.")
 
 
 # ---------------------------------------------------------------------------
@@ -310,24 +343,38 @@ def build_outcomes() -> tuple[pd.DataFrame, pd.DataFrame]:
     outcomes["doi_norm"] = outcomes["doi"].map(normalise_doi)
     outcomes["is_output"] = ~outcomes["type"].isin(MERGED_NOT_OUTPUT)
 
-    # The merge populates `cited_by` from OpenAlex and Scopus but never falls
-    # back to Web of Science, so a paper held only by WoS reads as having no
-    # citation count at all, which is not the same as having none. Coalesce
-    # into a new column and record which source it came from, leaving the
-    # original `cited_by` untouched so the gap stays visible.
-    cited = pd.to_numeric(outcomes.get("cited_by"), errors="coerce")
-    wos_cited = pd.to_numeric(outcomes.get("wos_times_cited_all_db"),
-                              errors="coerce")
+    # Citation counts. Until 17 August the merge populated `cited_by` from
+    # Scopus only, despite advertising a WoS-then-Scopus rule, so a paper held
+    # only by WoS read as having no citation count rather than a missing one.
+    # That was fixed upstream in the collector, and `cited_by` now carries both
+    # sources: coverage went from 4,102 publications to 6,220.
+    #
+    # The fallback below is therefore a no-op against current data and is kept
+    # deliberately, as a guard. If a future collection or merge change
+    # reintroduces the gap, `cited_by_best` stays correct and the recovery
+    # count prints, rather than the loss passing unnoticed. Use
+    # `cited_by_best` in analysis regardless, so nothing has to change if that
+    # happens.
+    cited = numeric(outcomes, "cited_by")
+    wos_cited = numeric(outcomes, "wos_times_cited_all_db")
     outcomes["cited_by_best"] = cited.fillna(wos_cited)
-    outcomes["cited_by_source"] = pd.Series(
-        pd.NA, index=outcomes.index, dtype="object").where(
-        cited.isna() & wos_cited.isna(),
-        pd.Series("openalex_or_scopus", index=outcomes.index).where(
-            cited.notna(), "wos"))
+    outcomes["cited_by_source"] = np.where(
+        cited.notna(), "merged",
+        np.where(wos_cited.notna(), "wos_fallback", None))
     recovered = int((cited.isna() & wos_cited.notna()).sum())
     if recovered:
-        print(f"  recovered {recovered} citation counts from Web of Science "
-              f"that `cited_by` alone would have left null")
+        print(f"  [WARN] recovered {recovered} citation counts from Web of "
+              f"Science that `cited_by` alone would have left null. The "
+              f"upstream merge has regressed; tell whoever owns it.")
+
+    # OpenAlex is held out of `cited_by` by deliberate decision, on the
+    # grounds that it agrees with Scopus too rarely to merge. It remains
+    # available as `openalex_cited_by` for sensitivity analysis.
+    oa_only = int((cited.isna()
+                   & numeric(outcomes, "openalex_cited_by").notna()).sum())
+    if oa_only:
+        print(f"  {oa_only} outcomes have an OpenAlex citation count and no "
+              f"merged one, excluded by design")
 
     # Attach the outcome-side discipline where the DOI resolves to one.
     labelled = read("publications_labelled")
@@ -340,6 +387,7 @@ def build_outcomes() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     if not outcomes.global_outcome_id.is_unique:
         raise SystemExit("global_outcome_id is not unique after collapsing")
+    check_outcome_schema(outcomes)
 
     project_outcomes = links.copy()
     return outcomes, project_outcomes

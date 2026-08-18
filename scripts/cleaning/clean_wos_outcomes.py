@@ -75,7 +75,11 @@ TEXT_COLUMNS = [
 ]
 
 NUMERIC_COLUMNS = [
+    # collect_wos.py emitted `times_cited_all_db` until 17 August and
+    # `cited_by` after it. Both are listed so files collected either side of
+    # that change clean correctly.
     "times_cited_all_db",
+    "cited_by",
     "reference_count",
     "n_addresses"
 ]
@@ -239,6 +243,11 @@ def main():
     df, duplicate_rows = clean_df(df)
     df = df.drop(columns=COLS_TO_DROP, errors="ignore")
     df = clean_text_columns(df, *TEXT_COLUMNS)
+    # Normalise the citation column name. The collector was renamed on
+    # 17 August; older collected files still carry the old name, and the
+    # merge keys on `cited_by`.
+    if "times_cited_all_db" in df.columns and "cited_by" not in df.columns:
+        df = df.rename(columns={"times_cited_all_db": "cited_by"})
     df = convert_to_numeric(df, *NUMERIC_COLUMNS)
     # WoS dates are ISO strings (2025-10-10), unlike GtR's millisecond
     # timestamps, so the shared convert_to_date helper (unit="ms") coerces

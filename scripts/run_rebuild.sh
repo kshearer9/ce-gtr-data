@@ -33,7 +33,7 @@ echo "installed the 1,673 union"
 # --- 2. Rebuild the merged project table -------------------------------------
 echo
 echo "--- step 2: merge GtR with OpenAlex project metadata ---"
-$PY -m scripts.cleaning.merge_datasets
+$PY -m scripts.cleaning.merge
 
 # --- 3. Refuse to continue on the wrong row count ----------------------------
 # A silent drop here would poison everything downstream, and the run would look
