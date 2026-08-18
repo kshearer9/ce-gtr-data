@@ -701,7 +701,8 @@ XLSX_DROP = ["abstract_text_clean", "abstract", "abstract_clean", "description",
 
 XLSX_TABLES = ["projects", "project_institutions", "institutions", "outcomes",
                "project_outcomes", "project_field_probabilities",
-               "publication_field_probabilities", "authors"]
+               "publication_field_probabilities", "authors",
+               "outcome_authors"]
 
 XLSX_MAX_ROWS = 200_000
 
