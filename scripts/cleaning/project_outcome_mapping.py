@@ -1,9 +1,10 @@
 """
 Merge outcome records from GtR, OpenAlex, Scopus and Web of Science.
 
-Matches records using project ID + title or description, combines matched
-source IDs, and assigns a global_outcome_id to each unique outcome.
-Outcomes linked to multiple projects are retained as separate project rows.
+Matches records using project ID + DOI, falling back to title or description
+when a record has no DOI, combines matched source IDs, and assigns a
+global_outcome_id to each unique outcome. Outcomes linked to multiple
+projects are retained as separate project rows.
 """
 
 from pathlib import Path
@@ -47,6 +48,16 @@ def normalise_identifier(value):
         return ""
     value = str(value).lower()
     return re.sub(r"[^a-z0-9]", "", value)
+
+def normalise_doi(value):
+    """
+    Lower-case a DOI and strip any resolver prefix, for matching.
+    """
+    if pd.isna(value):
+        return ""
+    value = re.sub(
+        r"^https?://(dx\.)?doi\.org/", "", str(value).strip().lower())
+    return value
 
 def create_global_outcome_ids(df):
     """
@@ -172,14 +183,26 @@ def prepare_dataframe(df, description_column, source):
     # Keep a common description column
     df["description_clean"] = df[description_column]
 
+    # DOI
+    df["doi_for_match"] = (
+        df["doi"].apply(normalise_doi) if "doi" in df.columns
+        else ""
+    )
+
     return df
 
 
 def create_match_keys(df):
     """
-    Create title and description matching keys.
+    Create DOI, title and description matching keys.
     """
     df = df.copy()
+
+    # DOI key
+    df["project_doi_key"] = (
+        df["project_id_clean"]
+        + "||"
+        + df["doi_for_match"])
 
     # Title key
     df["project_title_key"] = (
@@ -240,8 +263,13 @@ def find_external_matches(
     Match an external outcome dataset against an existing outcome dataset.
 
     Matching order:
-    1. project ID + title
-    2. project ID + description
+    1. project ID + DOI
+    2. project ID + title
+    3. project ID + description
+
+    DOI goes first: it's the standard identifier for the same output
+    appearing in two sources, and it catches cases title/description
+    matching misses on their own
 
     If a match is found:
         - add the external outcome ID to the existing row
@@ -253,43 +281,57 @@ def find_external_matches(
 
     existing_df = existing_df.copy()
 
+    doi_lookup = {}
     title_lookup = {}
     description_lookup = {}
 
     # Create lookup dictionaries from existing outcomes
     for index, row in existing_df.iterrows():
+        doi_key = row["project_doi_key"]
+        if (row["doi_for_match"] != "" and doi_key not in doi_lookup):
+            doi_lookup[doi_key] = index
+
         title_key = row["project_title_key"]
         if (row["title_clean_for_match"] != "" and title_key not in title_lookup):
             title_lookup[title_key] = index
 
         description_key = row["project_description_key"]
-        if (row["description_for_match"] != "" 
+        if (row["description_for_match"] != ""
             and description_key not in description_lookup):
             description_lookup[description_key] = index
 
     matched_indices = set()
     new_external_rows = []
 
+    added_doi_keys = set()
     added_title_keys = set()
     added_description_keys = set()
 
     # Match external records
     for _, row in external_df.iterrows():
+        doi_key = row["project_doi_key"]
         title_key = row["project_title_key"]
         description_key = row["project_description_key"]
 
+        has_doi = (row["doi_for_match"] != "")
         has_title = (row["title_clean_for_match"] != "")
         has_description = (row["description_for_match"] != "")
 
         matched_index = None
         match_basis = None
 
-        # 1. Try title
-        if has_title and title_key in title_lookup:
+        # 1. Try DOI
+        if has_doi and doi_key in doi_lookup:
+            matched_index = doi_lookup[doi_key]
+            match_basis = "doi"
+
+        # 2. Try title
+        if (matched_index is None and has_title
+            and title_key in title_lookup):
             matched_index = title_lookup[title_key]
             match_basis = "title"
 
-        # 2. Try description
+        # 3. Try description
         if (matched_index is None and has_description
             and description_key in description_lookup):
             matched_index = description_lookup[description_key]
@@ -312,17 +354,26 @@ def find_external_matches(
             continue
 
         # No existing match
-        if not has_title and not has_description:
+        if not has_doi and not has_title and not has_description:
             continue
 
-        # Prevent duplicate new title records
-        if has_title:
+        # Prevent duplicate new records: same project + same DOI/title/
+        # description arriving twice within one external source (e.g. two
+        # editions of the same journal article) should become one new row,
+        # not two, or the second overwrites the first's outcome_id with
+        # nothing to show for the first.
+        if has_doi:
+            if doi_key in added_doi_keys:
+                continue
+            added_doi_keys.add(doi_key)
+            match_basis = "doi"
+
+        elif has_title:
             if title_key in added_title_keys:
                 continue
             added_title_keys.add(title_key)
             match_basis = "title"
 
-        # Otherwise use description
         elif has_description:
             if description_key in added_description_keys:
                 continue
