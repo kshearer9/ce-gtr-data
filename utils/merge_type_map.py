@@ -44,10 +44,10 @@ GTR_TYPE_MAP = {
     "scientific meeting (conference/symposium etc.)": ("dissemination", "scientific_meeting"),
 
     # Artistic and Creative products
-    "film/video/animation": ("creative_product", "film_video_or_animation"),
-    "composition/score": ("creative_product", "composition"),
-    "performance (music, dance, drama, etc)":("creative_product", "performance"),
-    "artistic/creative exhibition":("creative_product", "exhibition"),
+    "film/video/animation": ("artistic_and_creative_product", "film_video_or_animation"),
+    "composition/score": ("artistic_and_creative_product", "composition"),
+    "performance (music, dance, drama, etc)":("artistic_and_creative_product", "performance"),
+    "artistic/creative exhibition":("artistic_and_creative_product", "exhibition"),
     "artefact (including digital)": ("artistic_and_creative_product", "artefact"),
     "artwork": ("artistic_and_creative_product", "artwork"),
     "image": ("artistic_and_creative_product", "image"),
