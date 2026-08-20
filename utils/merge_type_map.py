@@ -153,7 +153,7 @@ WOS_TYPE_MAP = {
     "article; early access": ("publication", "article_or_review"),
     "review; early access": ("publication", "article_or_review"),
     "editorial material; early access": ("publication", "editorial"),
-    "article; book chapter": ("publication", "book_chapter"),
+    "article; book chapter": ("publication", "article_or_review"),
     "article; retracted publication": ("publication", "retracted_article"),
     "retracted publication": ("publication", "retracted_article"),
     "withdrawn publication": ("publication", "retracted_article"),
