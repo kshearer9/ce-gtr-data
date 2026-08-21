@@ -68,6 +68,7 @@ CACHE_DIR = ROOT_DIR / "cache"
 CLEANED_DIR = ROOT_DIR / "data" / "cleaned" / "outcomes"
 OUTPUT_DIR = ROOT_DIR / "data" / "cleaned" / "authors"
 FIGURES_DIR = ROOT_DIR / "figures"
+PROJECT_OUTCOME_MAP_PATH = ROOT_DIR / "data" / "cleaned" / "merged" / "project_outcome_map.csv"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -306,16 +307,7 @@ def harvest_openalex():
 
 
 def scopus_orcid_lookup(response):
-    """auid -> ORCID, built from item.bibrecord.head.author-group.
-
-    The main author loop below reads names/auids from the simpler
-    `authors.author[]` block, which never carries ORCID at all (checked
-    directly against the cache - it isn't a missing-value case, the key
-    just isn't there). The same response has a second, richer author
-    listing at this path that does carry `@orcid` for authors who have
-    one recorded, cross-referenced by the same `@auid` both blocks
-    share. Not every author has an ORCID even here - that's Scopus's
-    own coverage gap, not something this recovers further."""
+    """auid -> ORCID, built from item.bibrecord.head.author-group."""
     lookup = {}
     try:
         groups = response["item"]["bibrecord"]["head"]["author-group"]
@@ -590,6 +582,45 @@ JOIN_SPEC = {
     "wos": ("wos_all_outcomes_clean.csv", "outcome_id"),
 }
 
+# project_outcome_map.csv's per-source native-id columns
+PROJECT_OUTCOME_MAP_NATIVE_ID_COLUMNS = {
+    "openalex": "openalex_outcome_id",
+    "scopus": "scopus_outcome_id",
+    "wos": "wos_outcome_id",
+    "gtr": "gtr_outcome_id",
+}
+
+
+def normalise_native_id(value):
+    """Strips WoS's leading zeros and trailing ".0" (a float-cast
+    artefact in project_outcome_map.csv) so ids match this script's own
+    untouched string form. Duplicated from build_final_database.py."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    return str(value).removesuffix(".0").lstrip("0") or "0"
+
+
+def load_global_outcome_id_lookup():
+    """(source, normalised native id) -> global_outcome_id, from
+    project_outcome_map.csv (run project_outcome_mapping.py first).
+    Better than DOI alone for merge_same_paper_identities() below."""
+    if not PROJECT_OUTCOME_MAP_PATH.exists():
+        print(f"  {PROJECT_OUTCOME_MAP_PATH} not found - run "
+              f"project_outcome_mapping.py first for global_outcome_id-based "
+              f"matching; falling back to DOI only")
+        return {}
+    df = pd.read_csv(PROJECT_OUTCOME_MAP_PATH, low_memory=False)
+    lookup = {}
+    for source, column in PROJECT_OUTCOME_MAP_NATIVE_ID_COLUMNS.items():
+        if column not in df.columns:
+            continue
+        sub = df.loc[df[column].notna(), ["global_outcome_id", column]]
+        for native_id, global_id in zip(sub[column], sub.global_outcome_id):
+            norm = normalise_native_id(native_id)
+            if norm:
+                lookup[(source, norm)] = global_id
+    return lookup
+
 
 def to_outcome_id(source, outcome_key):
     """
@@ -716,6 +747,139 @@ def resolve_identities(df):
     return df
 
 
+def _find_root(parent, x):
+    """Union-find, path-compressed: the representative identity_id a
+    (possibly merged-away) identity_id currently resolves to."""
+    while parent.get(x, x) != x:
+        parent[x] = parent.get(parent[x], parent[x])
+        x = parent[x]
+    return x
+
+
+def _union_identities(parent, type_rank, row_counts, id_type, a, b):
+    """Merge two identity_ids' union-find sets, keeping whichever root
+    ranks better (orcid > native_id > name_only, then more rows, then
+    alphabetical) as the winner."""
+    ra, rb = _find_root(parent, a), _find_root(parent, b)
+    if ra == rb:
+        return
+    key_a = (type_rank[id_type[ra]], -row_counts[ra], ra)
+    key_b = (type_rank[id_type[rb]], -row_counts[rb], rb)
+    winner, loser = (ra, rb) if key_a < key_b else (rb, ra)
+    parent[loser] = winner
+
+
+def _given_name_key(given_name):
+    """Normalised full given name, or None for bare initials (e.g. "J.")
+    - initials alone can't safely tell two different people apart."""
+    if given_name is None or (isinstance(given_name, float) and pd.isna(given_name)):
+        return None
+    tokens = [t.strip(".") for t in str(given_name).split() if t.strip(".")]
+    if not tokens or max(len(t) for t in tokens) <= 1:
+        return None
+    text = unicodedata.normalize("NFKD", tokens[0])
+    return "".join(c for c in text if not unicodedata.combining(c)).lower()
+
+
+def _paper_key(row, global_outcome_id_lookup):
+    """global_outcome_id if this row's outcome resolved to one, else the
+    raw DOI, else None (no cross-source key available for this row)."""
+    global_id = global_outcome_id_lookup.get(
+        (row.source, normalise_native_id(row.outcome_id)))
+    if global_id:
+        return ("global", global_id)
+    if row.doi:
+        return ("doi", row.doi)
+    return None
+
+
+def merge_same_paper_identities(df, global_outcome_id_lookup):
+    """Merges identities sharing a name_key + given name on the same
+    paper. name_only identities (e.g. "name:zhang_j") are reassigned row
+    by row, not merged as a whole label - that label can be shared by
+    many unrelated people, and merging it wholesale would chain them."""
+    type_rank = {"orcid": 0, "native_id": 1}
+    row_counts = df["identity_id"].value_counts()
+    id_type = df.drop_duplicates("identity_id").set_index("identity_id")["identity_type"]
+    parent = {}
+
+    df = df.copy()
+    df["_paper_key"] = df.apply(
+        lambda row: _paper_key(row, global_outcome_id_lookup), axis=1)
+    matched_by_global = int((df["_paper_key"].map(
+        lambda k: k is not None and k[0] == "global")).sum())
+    matched_by_doi_only = int((df["_paper_key"].map(
+        lambda k: k is not None and k[0] == "doi")).sum())
+    print(f"  paper keys: {matched_by_global:,} via global_outcome_id, "
+         f"{matched_by_doi_only:,} via DOI")
+
+    has_key = df["_paper_key"].notna()
+    n_skipped_no_evidence, n_skipped_ambiguous, n_skipped_conflicting_orcid = 0, 0, 0
+    row_reassignments = {}
+    for paper, paper_group in df[has_key].groupby("_paper_key"):
+        for name_key, key_group in paper_group.groupby("name_key"):
+            ids = key_group["identity_id"].unique()
+            if len(ids) < 2:
+                continue
+            given_keys = {gk for gk in key_group["given_name"].map(_given_name_key)
+                         if gk}
+            if len(given_keys) == 0:
+                n_skipped_no_evidence += 1
+                continue
+            if len(given_keys) > 1:
+                n_skipped_ambiguous += 1
+                continue
+
+            strong_ids = [i for i in ids if id_type[i] != "name_only"]
+            # Check each id's CURRENT root (not its original type) - a
+            # native_id already folded into an ORCID earlier is an ORCID
+            # now in all but name, and skipping this would let it bridge
+            # two different ORCIDs together one hop removed.
+            orcid_roots = {_find_root(parent, i) for i in strong_ids
+                          if id_type[_find_root(parent, i)] == "orcid"}
+            if len(orcid_roots) > 1:
+                # Two different confirmed ORCIDs agreeing on name+paper:
+                # trust the sources over this heuristic and skip the group.
+                n_skipped_conflicting_orcid += 1
+                continue
+            for other in strong_ids[1:]:
+                _union_identities(parent, type_rank, row_counts, id_type,
+                                  strong_ids[0], other)
+            if not strong_ids:
+                continue  # only name-only rows agree here - nothing solid to anchor to
+
+            winner = _find_root(parent, strong_ids[0])
+            name_only_rows = key_group[
+                key_group["identity_id"].map(lambda i: id_type[i] == "name_only")]
+            for idx in name_only_rows.index:
+                row_reassignments[idx] = winner
+    df = df.drop(columns="_paper_key")
+
+    n_bucket_merged = sum(1 for old in df["identity_id"].unique()
+                          if _find_root(parent, old) != old)
+    if n_bucket_merged:
+        df["identity_id"] = df["identity_id"].map(lambda x: _find_root(parent, x))
+    for idx, winner in row_reassignments.items():
+        df.at[idx, "identity_id"] = _find_root(parent, winner)
+    if n_bucket_merged or row_reassignments:
+        df["identity_type"] = df["identity_id"].map(id_type)
+        print(f"  merged {n_bucket_merged:,} orcid/native_id identities; "
+             f"reassigned {len(row_reassignments):,} individual name-only "
+             f"rows to a confirmed identity")
+    print(f"  skipped {n_skipped_no_evidence:,} groups with no given name to "
+         f"confirm against, {n_skipped_ambiguous:,} with disagreeing given names, "
+         f"{n_skipped_conflicting_orcid:,} with two conflicting confirmed ORCIDs")
+
+    remapped = {old for old in df["identity_id"].unique()
+               if _find_root(parent, old) != old}
+    if remapped:
+        winners = {_find_root(parent, old) for old in remapped}
+        print(f"  merged {len(remapped):,} identities into {len(winners):,} people")
+        df["identity_id"] = df["identity_id"].map(lambda x: _find_root(parent, x))
+        df["identity_type"] = df["identity_id"].map(id_type)
+    return df
+
+
 def main():
     print(f"Repository root: {ROOT_DIR}")
     print(f"Caches:          {CACHE_DIR}")
@@ -754,6 +918,10 @@ def main():
           f"({100 * matched / len(df):.1f}%)")
 
     df = resolve_identities(df)
+
+    print("\nMerging same-paper identities...")
+    global_outcome_id_lookup = load_global_outcome_id_lookup()
+    df = merge_same_paper_identities(df, global_outcome_id_lookup)
 
     column_order = [
         "source", "outcome_id", "outcome_key", "doi", "author_position",
