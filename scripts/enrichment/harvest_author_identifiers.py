@@ -305,6 +305,43 @@ def harvest_openalex():
     return rows
 
 
+def scopus_orcid_lookup(response):
+    """auid -> ORCID, built from item.bibrecord.head.author-group.
+
+    The main author loop below reads names/auids from the simpler
+    `authors.author[]` block, which never carries ORCID at all (checked
+    directly against the cache - it isn't a missing-value case, the key
+    just isn't there). The same response has a second, richer author
+    listing at this path that does carry `@orcid` for authors who have
+    one recorded, cross-referenced by the same `@auid` both blocks
+    share. Not every author has an ORCID even here - that's Scopus's
+    own coverage gap, not something this recovers further."""
+    lookup = {}
+    try:
+        groups = response["item"]["bibrecord"]["head"]["author-group"]
+    except (KeyError, TypeError):
+        return lookup
+    if isinstance(groups, dict):
+        groups = [groups]
+    if not isinstance(groups, list):
+        return lookup
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        authors = group.get("author")
+        if isinstance(authors, dict):
+            authors = [authors]
+        if not isinstance(authors, list):
+            continue
+        for author in authors:
+            if not isinstance(author, dict):
+                continue
+            auid, orcid = author.get("@auid"), author.get("@orcid")
+            if auid and orcid:
+                lookup[str(auid)] = orcid
+    return lookup
+
+
 def harvest_scopus():
     """
     One row per author. The cache wraps payloads in {"type", "value"} and the
@@ -341,6 +378,8 @@ def harvest_scopus():
         if not isinstance(authors, list):
             continue
 
+        orcid_lookup = scopus_orcid_lookup(response)
+
         for position, author in enumerate(authors, 1):
             if not isinstance(author, dict):
                 continue
@@ -363,7 +402,9 @@ def harvest_scopus():
                 # "Smith, John" disambiguates where "Smith J." cannot.
                 "name_key": candidate_normalise(
                     f"{surname}, {given}" if given and surname else raw),
-                "orcid": clean_orcid(author.get("orcid")),
+                "orcid": clean_orcid(
+                    orcid_lookup.get(str(author.get("@auid") or ""))
+                    or author.get("orcid")),
                 "native_id": author.get("@auid") or "",
                 "native_id_type": "scopus_auid",
             })
@@ -546,7 +587,7 @@ def harvest_wos():
 JOIN_SPEC = {
     "openalex": ("openalex_all_outcomes_clean.csv", "openalex_url"),
     "scopus": ("scopus_all_outcomes_clean.csv", "eid"),
-    "wos": ("wos_all_outcomes_clean.csv", "wos_uid"),
+    "wos": ("wos_all_outcomes_clean.csv", "outcome_id"),
 }
 
 
@@ -584,7 +625,13 @@ def build_outcome_lookup():
             print(f"  {source}: {filename} not found, project ids and DOIs blank")
             continue
         wanted = {column, "project_id", "doi"}
-        df = pd.read_csv(path, usecols=lambda c: c in wanted, low_memory=False)
+        # dtype=str on the join column specifically - left to its own
+        # inference, pandas reads WoS's all-digit outcome_id as an
+        # integer and silently drops its leading zero (the raw CSV text
+        # itself has it: "001794901400001"), which would otherwise break
+        # every WoS lookup below even after the column name is right.
+        df = pd.read_csv(path, usecols=lambda c: c in wanted,
+                         dtype={column: str}, low_memory=False)
         if column not in df.columns or "project_id" not in df.columns:
             print(f"  {source}: expected columns missing, skipped")
             continue
@@ -597,7 +644,14 @@ def build_outcome_lookup():
             project = getattr(row, "project_id", None)
             if pd.isna(key):
                 continue
-            key = str(key)
+            # Same normalisation as the query side below (to_outcome_id)
+            # - both sides need to agree on format. scopus/openalex's
+            # cleaned join columns (eid, openalex_url) still carry their
+            # source prefix, same as the raw harvested key, so this
+            # matches what worked before for them; wos's cleaned
+            # outcome_id column already has its prefix stripped, so this
+            # is what makes wos match at all.
+            key = to_outcome_id(source, key)
             if not pd.isna(project):
                 grouped[key].add(str(project))
             if has_doi:
@@ -682,10 +736,15 @@ def main():
     project_lookup, doi_lookup = build_outcome_lookup()
     project_ids, doi_values, outcome_ids = [], [], []
     for source, key in zip(df["source"], df["outcome_key"]):
-        projects = project_lookup.get(source, {}).get(str(key), set())
+        # Normalise the same way the lookup table's keys were built (e.g.
+        # strip WoS's "WOS:" prefix) - using the raw outcome_key here
+        # would never match, since project_lookup is keyed by the
+        # cleaned/prefix-stripped outcome_id.
+        lookup_key = to_outcome_id(source, key)
+        projects = project_lookup.get(source, {}).get(lookup_key, set())
         project_ids.append("; ".join(sorted(projects)))
-        doi_values.append(doi_lookup.get(source, {}).get(str(key), ""))
-        outcome_ids.append(to_outcome_id(source, key))
+        doi_values.append(doi_lookup.get(source, {}).get(lookup_key, ""))
+        outcome_ids.append(lookup_key)
     df["project_ids"] = project_ids
     df["doi"] = doi_values
     df["outcome_id"] = outcome_ids
