@@ -18,6 +18,20 @@ def normalise_funding_type(value):
     return funding_type_map.get(value, value)
 
 
+# Raw GtR grant_category values that are just abbreviated/sub-track spellings
+# of another category, not a genuinely distinct scheme - "CRD" is Innovate
+# UK's own shorthand for "Collaborative R&D", and "GRD Proof of
+# Concept"/"GRD Proof of Market" are funding-stage sub-tracks within the
+# "Grant for R&D" competition ("GRD" = Grant for R&D). Folded into the
+# parent category here so they don't fragment the scheme-type composition
+# figures downstream.
+GRANT_CATEGORY_ALIASES = {
+    "CRD": "Collaborative R&D",
+    "GRD Proof of Concept": "Grant for R&D",
+    "GRD Proof of Market": "Grant for R&D",
+}
+
+
 def merge_projects(gtr_df, openalex_df):
     # Keep only OpenAlex enrichment columns
     openalex_cols = [
@@ -54,6 +68,11 @@ def merge_projects(gtr_df, openalex_df):
             columns=["funding_type"],
             inplace=True,
             errors="ignore"
+        )
+
+    if "grant_category" in merged_df.columns:
+        merged_df["grant_category"] = merged_df["grant_category"].replace(
+            GRANT_CATEGORY_ALIASES
         )
 
     # Use the longer description
